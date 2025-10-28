@@ -1,8 +1,7 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
 
-import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
+import { CustomLeftTabBar } from '@/components/custom-left-tab-bar';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -14,20 +13,40 @@ export default function TabLayout() {
       screenOptions={{
         tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
         headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
+        tabBarPosition: 'left',
+      }}
+      tabBar={(props) => <CustomLeftTabBar {...props} />}>
       <Tabs.Screen
         name="index"
         options={{
           title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+        
+        }}
+      
+      />
+
+      <Tabs.Screen
+        name="pricing"
+        options={{
+          title: 'Pricing',
         }}
       />
       <Tabs.Screen
-        name="explore"
+        name="about"
         options={{
-          title: 'Explore',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
+          title: 'About',
+        }}
+      />
+      <Tabs.Screen
+        name="get-care"
+        options={{
+          title: 'Get Care Now',
+        }}
+      />
+      <Tabs.Screen
+        name="account"
+        options={{
+          title: 'Account',
         }}
       />
     </Tabs>
