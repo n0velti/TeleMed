@@ -22,6 +22,7 @@ export function ScrollArrow({ direction, onPress, disabled = false }: ScrollArro
         styles.arrow,
         { backgroundColor: colors.background },
         disabled && styles.disabled,
+        { pointerEvents: disabled ? 'none' : 'auto' },
       ]}
       onPress={onPress}
       disabled={disabled}

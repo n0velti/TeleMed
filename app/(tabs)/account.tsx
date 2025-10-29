@@ -1,10 +1,19 @@
 import { Colors } from '@/constants/theme';
+import { useAuth } from '@/hooks/use-auth';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import {
+  handleConfirmSignUp as authConfirmSignUp,
+  handleResendCode as authResendCode,
+  handleSignIn as authSignIn,
+  handleSignUp as authSignUp,
+  getAuthErrorMessage,
+} from '@/lib/auth';
 import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 export default function AccountScreen() {
   const colorScheme = useColorScheme();
+  const { refreshAuth } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -12,48 +21,111 @@ export default function AccountScreen() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [showVerification, setShowVerification] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = () => {
-    if (email && password) {
-      Alert.alert('Success', 'Login successful!');
-    } else {
+  const handleLogin = async () => {
+    if (!email || !password) {
       Alert.alert('Error', 'Please fill in all fields');
+      return;
     }
-  };
 
-  const handleSignUp = () => {
-    if (email && password && confirmPassword) {
-      if (password !== confirmPassword) {
-        Alert.alert('Error', 'Passwords do not match');
-        return;
+    setIsLoading(true);
+    try {
+      const result = await authSignIn(email.trim(), password);
+      if (result.success) {
+        await refreshAuth();
+        Alert.alert('Success', 'Login successful!');
+        // Reset form
+        setEmail('');
+        setPassword('');
+      } else {
+        Alert.alert('Error', getAuthErrorMessage(result.error!));
       }
-      // Show verification code input
-      setShowVerification(true);
-      Alert.alert('Verification Code Sent', `A verification code has been sent to ${email}`);
-    } else {
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSignUp = async () => {
+    if (!email || !password || !confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match');
+      return;
+    }
+
+    // Basic password validation
+    if (password.length < 8) {
+      Alert.alert('Error', 'Password must be at least 8 characters long');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const result = await authSignUp(email.trim(), password);
+      if (result.success) {
+        // Always show verification screen after successful sign up
+        // AWS Cognito will send the verification code via email
+        setShowVerification(true);
+        // Don't show alert if verification is required (expected behavior)
+        // The verification screen message will inform the user
+      } else {
+        Alert.alert('Error', getAuthErrorMessage(result.error!));
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleVerifyCode = () => {
-    if (verificationCode) {
-      // TODO: AWS Amplify verification will be implemented here
-      Alert.alert('Success', 'Account verified successfully!');
-      // Reset form and go back to login
-      setShowVerification(false);
-      setIsSignUp(false);
-      setEmail('');
-      setPassword('');
-      setConfirmPassword('');
-      setVerificationCode('');
-    } else {
+  const handleVerifyCode = async () => {
+    if (!verificationCode) {
       Alert.alert('Error', 'Please enter the verification code');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const result = await authConfirmSignUp(email.trim(), verificationCode.trim());
+      if (result.success) {
+        Alert.alert('Success', 'Account verified successfully!');
+        // Reset form and go back to login
+        setShowVerification(false);
+        setIsSignUp(false);
+        setEmail('');
+        setPassword('');
+        setConfirmPassword('');
+        setVerificationCode('');
+      } else {
+        Alert.alert('Error', getAuthErrorMessage(result.error!));
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleResendCode = () => {
-    // TODO: AWS Amplify resend code will be implemented here
-    Alert.alert('Code Resent', `A new verification code has been sent to ${email}`);
+  const handleResendCode = async () => {
+    setIsLoading(true);
+    try {
+      const result = await authResendCode(email.trim());
+      if (result.success) {
+        Alert.alert('Code Resent', `A new verification code has been sent to ${email.trim()}`);
+      } else {
+        Alert.alert('Error', getAuthErrorMessage(result.error!));
+      }
+    } catch (error) {
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleGoogleLogin = () => {
@@ -107,11 +179,30 @@ export default function AccountScreen() {
               maxLength={6}
             />
 
-            <TouchableOpacity style={styles.loginButton} onPress={handleVerifyCode}>
-              <Text style={styles.loginButtonText}>Verify Code</Text>
+            <TouchableOpacity 
+              style={[
+                styles.loginButton, 
+                isLoading && styles.loginButtonDisabled,
+                { pointerEvents: isLoading ? 'none' : 'auto' }
+              ]} 
+              onPress={handleVerifyCode}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text style={styles.loginButtonText}>Verify Code</Text>
+              )}
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.resendButton} onPress={handleResendCode}>
+            <TouchableOpacity 
+              style={[
+                styles.resendButton,
+                { pointerEvents: isLoading ? 'none' : 'auto' }
+              ]} 
+              onPress={handleResendCode}
+              disabled={isLoading}
+            >
               <Text style={styles.resendButtonText}>Didn't receive a code? Resend</Text>
             </TouchableOpacity>
 
@@ -186,8 +277,20 @@ export default function AccountScreen() {
               </TouchableOpacity>
             )}
 
-            <TouchableOpacity style={styles.loginButton} onPress={isSignUp ? handleSignUp : handleLogin}>
-              <Text style={styles.loginButtonText}>{isSignUp ? 'Sign Up' : 'Sign In'}</Text>
+            <TouchableOpacity 
+              style={[
+                styles.loginButton, 
+                isLoading && styles.loginButtonDisabled,
+                { pointerEvents: isLoading ? 'none' : 'auto' }
+              ]} 
+              onPress={isSignUp ? handleSignUp : handleLogin}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text style={styles.loginButtonText}>{isSignUp ? 'Sign Up' : 'Sign In'}</Text>
+              )}
             </TouchableOpacity>
 
             <View style={styles.divider}>
@@ -331,6 +434,9 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     alignItems: 'center',
     marginBottom: 20,
+  },
+  loginButtonDisabled: {
+    opacity: 0.6,
   },
   loginButtonText: {
     color: 'white',
