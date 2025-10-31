@@ -1,0 +1,1 @@
+{"ast":null,"code":"export * from '../src/dom/global-events';","map":{"version":3,"names":[],"sources":["/Users/edward/Documents/TeleMed/TeleMed/node_modules/expo/dom/global.js"],"sourcesContent":["export * from '../src/dom/global-events';\n"],"mappings":"AAAA,cAAc,0BAA0B","ignoreList":[]},"metadata":{"hasCjsExports":false},"sourceType":"module","externalDependencies":[]}
