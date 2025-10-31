@@ -1,5 +1,5 @@
 import { getCurrentAuthUser } from '@/lib/auth';
-import { type AuthUser } from 'aws-amplify/auth';
+import { type AuthUser, fetchUserAttributes } from 'aws-amplify/auth';
 import { useCallback, useEffect, useState } from 'react';
 
 /**
@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
  */
 export function useAuth() {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [userEmail, setUserEmail] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
@@ -21,12 +22,22 @@ export function useAuth() {
       if (user && !error) {
         setUser(user);
         setIsAuthenticated(true);
+        // Fetch user attributes to get email
+        try {
+          const attributes = await fetchUserAttributes();
+          setUserEmail(attributes.email || user.signInDetails?.loginId || user.username || '');
+        } catch (attrError) {
+          // Fallback to username if attributes can't be fetched
+          setUserEmail(user.signInDetails?.loginId || user.username || '');
+        }
       } else {
         setUser(null);
+        setUserEmail('');
         setIsAuthenticated(false);
       }
     } catch (error) {
       setUser(null);
+      setUserEmail('');
       setIsAuthenticated(false);
     } finally {
       setIsLoading(false);
@@ -42,6 +53,7 @@ export function useAuth() {
 
   return {
     user,
+    userEmail,
     isAuthenticated,
     isLoading,
     refreshAuth: fetchCurrentUser,

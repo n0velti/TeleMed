@@ -1,9 +1,13 @@
+import type { Schema } from '@/amplify/data/resource';
 import { SpecialistSection } from '@/components/specialist-section';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { generateClient } from 'aws-amplify/data';
 import { router } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+const client = generateClient<Schema>();
 
 interface Specialist {
   id: string;
@@ -97,6 +101,101 @@ export default function HomeScreen() {
   const [showPriceDropdown, setShowPriceDropdown] = useState(false);
   const [showAvailabilityDropdown, setShowAvailabilityDropdown] = useState(false);
   const [showRatingDropdown, setShowRatingDropdown] = useState(false);
+  const [familyMedicineSpecialists, setFamilyMedicineSpecialists] = useState<Specialist[]>([]);
+  const [isLoadingFamilyMedicine, setIsLoadingFamilyMedicine] = useState(false);
+
+  // Fetch Family Medicine specialists from database
+  useEffect(() => {
+    const fetchFamilyMedicineSpecialists = async () => {
+      setIsLoadingFamilyMedicine(true);
+      try {
+        console.log('[Family Medicine] Starting fetch...');
+        
+        // First, find the "Family Medicine" specialization
+        const specializations = await client.models.Specialization.list();
+        console.log('[Family Medicine] All specializations:', specializations.data);
+        
+        const familyMedicineSpec = specializations.data.find(
+          spec => spec.name === 'Family Medicine' || spec.name?.toLowerCase().includes('family medicine')
+        );
+
+        if (!familyMedicineSpec) {
+          console.log('[Family Medicine] Family Medicine specialization not found');
+          console.log('[Family Medicine] Available specializations:', specializations.data.map(s => s.name));
+          setIsLoadingFamilyMedicine(false);
+          return;
+        }
+
+        const familyMedicineId = familyMedicineSpec.id;
+        console.log('[Family Medicine] Found specialization ID:', familyMedicineId);
+
+        // Find all specialist-specialization relationships for Family Medicine
+        const specialistSpecializations = await client.models.SpecialistSpecialization.list();
+        console.log('[Family Medicine] All specialist-specializations:', specialistSpecializations.data);
+        
+        const familyMedicineRelations = specialistSpecializations.data.filter(
+          ss => ss.specialization_id === familyMedicineId
+        );
+        console.log('[Family Medicine] Family Medicine relations:', familyMedicineRelations);
+
+        if (familyMedicineRelations.length === 0) {
+          console.log('[Family Medicine] WARNING: No SpecialistSpecialization relationships found for Family Medicine');
+          console.log('[Family Medicine] This means no specialists have been linked to Family Medicine specialization yet');
+          console.log('[Family Medicine] To fix: Register a specialist and select Family Medicine as their specialization');
+          // Don't return early - let it continue so we can set empty array and show the section
+        }
+
+        // Fetch all specialists
+        const allSpecialists = await client.models.Specialist.list();
+        console.log('[Family Medicine] All specialists:', allSpecialists.data);
+        
+        // Get specialist IDs from relationships
+        const specialistIds = familyMedicineRelations.map(ss => ss.specialist_id);
+        console.log('[Family Medicine] Specialist IDs:', specialistIds);
+
+        // Filter specialists that have Family Medicine specialization
+        // Show all specialists with Family Medicine, regardless of status (for now)
+        const familyMedicineDocs = allSpecialists.data
+          .filter(specialist => {
+            const hasSpecialization = specialistIds.includes(specialist.id);
+            console.log(`[Family Medicine] Specialist ${specialist.id} (${specialist.first_name} ${specialist.last_name}): hasSpecialization=${hasSpecialization}, status=${specialist.status}`);
+            
+            // For debugging: show all specialists with Family Medicine, even if not active
+            // Later we can filter by status === 'active' if needed
+            return hasSpecialization;
+          })
+          .map(specialist => ({
+            id: specialist.id,
+            name: `Dr. ${specialist.first_name} ${specialist.last_name}`,
+            specialty: 'Family Medicine',
+            rating: 4.5, // Default rating - can be enhanced later
+            experience: '10 years', // Default experience - can be enhanced later
+            price: 85, // Default price - can be enhanced later
+            image: specialist.photo_url || undefined,
+            nextAvailableTime: 'Today 2:00 PM', // Default - can be enhanced later
+          }));
+        
+        // Log detailed info for debugging
+        if (familyMedicineDocs.length === 0) {
+          console.log('[Family Medicine] No specialists found. Debugging info:');
+          console.log('[Family Medicine] - Specialization ID:', familyMedicineId);
+          console.log('[Family Medicine] - Specialist IDs from relationships:', specialistIds);
+          console.log('[Family Medicine] - All specialist IDs in DB:', allSpecialists.data.map(s => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, status: s.status })));
+          console.log('[Family Medicine] - Family Medicine relations:', familyMedicineRelations);
+        }
+
+        console.log('[Family Medicine] Final family medicine docs:', familyMedicineDocs);
+        setFamilyMedicineSpecialists(familyMedicineDocs);
+      } catch (error) {
+        console.error('[Family Medicine] Error fetching Family Medicine specialists:', error);
+        console.error('[Family Medicine] Error details:', JSON.stringify(error, null, 2));
+      } finally {
+        setIsLoadingFamilyMedicine(false);
+      }
+    };
+
+    fetchFamilyMedicineSpecialists();
+  }, []);
 
   const handleSpecialistPress = (specialist: Specialist) => {
     router.push(`/specialist/${specialist.id}`);
@@ -110,7 +209,17 @@ export default function HomeScreen() {
   const filteredSpecialists = useMemo(() => {
     const filtered: { [key: string]: Specialist[] } = {};
     
-    Object.entries(mockSpecialists).forEach(([specialty, specialists]) => {
+    // Merge Family Medicine specialists from database with mock data
+    // Family Medicine section will show database specialists (if available)
+    const specialistsToFilter: { [key: string]: Specialist[] } = {
+      ...mockSpecialists,
+    };
+    
+    // Always add Family Medicine section with database specialists
+    // This ensures the section appears even if loading or empty
+    specialistsToFilter['Family Medicine'] = familyMedicineSpecialists;
+    
+    Object.entries(specialistsToFilter).forEach(([specialty, specialists]) => {
       const filteredList = specialists.filter(specialist => {
         // Price filter
         let priceMatch = true;
@@ -141,13 +250,17 @@ export default function HomeScreen() {
         return priceMatch && availabilityMatch && ratingMatch;
       });
 
-      if (filteredList.length > 0) {
+      // Always include Family Medicine section even if empty (to show loading or empty state)
+      // For other specialties, only include if they have specialists
+      if (specialty === 'Family Medicine' || filteredList.length > 0) {
         filtered[specialty] = filteredList;
       }
     });
 
+    console.log('[Family Medicine] Filtered specialists:', filtered);
+    console.log('[Family Medicine] Family Medicine in filtered:', filtered['Family Medicine']);
     return filtered;
-  }, [priceFilter, availabilityFilter, ratingFilter]);
+  }, [priceFilter, availabilityFilter, ratingFilter, familyMedicineSpecialists]);
 
   const getPriceLabel = () => {
     switch (priceFilter) {
@@ -353,15 +466,32 @@ export default function HomeScreen() {
       
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         <ThemedView style={styles.sectionsContainer}>
-          {Object.entries(filteredSpecialists).map(([specialty, specialists]) => (
-            <SpecialistSection
-              key={specialty}
-              title={specialty}
-              specialists={specialists}
-              onSpecialistPress={handleSpecialistPress}
-              onTitlePress={handleTitlePress}
-            />
-          ))}
+          {/* Always show Family Medicine section first */}
+          {(() => {
+            const fmSpecialists = filteredSpecialists['Family Medicine'] || [];
+            console.log('[Family Medicine] Rendering section with specialists:', fmSpecialists.length);
+            return (
+              <SpecialistSection
+                key="Family Medicine"
+                title="Family Medicine"
+                specialists={fmSpecialists}
+                onSpecialistPress={handleSpecialistPress}
+                onTitlePress={handleTitlePress}
+              />
+            );
+          })()}
+          {/* Show other sections */}
+          {Object.entries(filteredSpecialists)
+            .filter(([specialty]) => specialty !== 'Family Medicine')
+            .map(([specialty, specialists]) => (
+              <SpecialistSection
+                key={specialty}
+                title={specialty}
+                specialists={specialists}
+                onSpecialistPress={handleSpecialistPress}
+                onTitlePress={handleTitlePress}
+              />
+            ))}
           {Object.keys(filteredSpecialists).length === 0 && (
             <View style={styles.noResultsContainer}>
               <ThemedText style={styles.noResultsText}>

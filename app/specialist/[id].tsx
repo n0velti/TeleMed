@@ -1,10 +1,16 @@
+import type { Schema } from '@/amplify/data/resource';
 import { StaticSidebar } from '@/components/static-sidebar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { useAppointments } from '@/hooks/use-appointments';
+import { useAuth } from '@/hooks/use-auth';
+import { generateClient } from 'aws-amplify/data';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import React, { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+
+const client = generateClient<Schema>();
 
 interface Specialist {
   id: string;
@@ -82,7 +88,104 @@ const allSpecialists: Record<string, Specialist> = {
 
 export default function SpecialistDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const specialist = allSpecialists[id];
+  const { user, userEmail } = useAuth();
+  const { createAppointment, isLoading: isCreating } = useAppointments();
+  const [showBookingModal, setShowBookingModal] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [startTime, setStartTime] = useState<string>('');
+  const [endTime, setEndTime] = useState<string>('');
+  const [appointmentPurpose, setAppointmentPurpose] = useState('');
+  const [specialist, setSpecialist] = useState<Specialist | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'images' | 'location' | 'info' | 'rating'>('images');
+
+  // Fetch specialist from database
+  useEffect(() => {
+    const fetchSpecialist = async () => {
+      if (!id) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        
+        // First try to get from database
+        const dbSpecialist = await client.models.Specialist.get({ id });
+        
+        if (dbSpecialist.data) {
+          // Fetch specializations for this specialist
+          const allSpecializations = await client.models.SpecialistSpecialization.list();
+          const specializations = allSpecializations.data.filter(
+            ss => ss.specialist_id === id
+          );
+
+          // Get specialization names
+          let specialtyName = 'General Practice';
+          if (specializations.length > 0) {
+            const specIds = specializations.map(s => s.specialization_id);
+            const allSpecs = await client.models.Specialization.list();
+            const specialistSpec = allSpecs.data.find(s => specIds.includes(s.id));
+            if (specialistSpec) {
+              specialtyName = specialistSpec.name || 'General Practice';
+            }
+          }
+
+          // Fetch availability
+          const allAvailability = await client.models.Availability.list();
+          const availability = allAvailability.data.filter(
+            a => a.specialist_id === id
+          );
+
+          // Format availability
+          const availabilityArray = availability.map(a => 
+            `${a.weekday} ${a.start_time}-${a.end_time}`
+          );
+
+          // Map database specialist to component format
+          const mappedSpecialist: Specialist = {
+            id: dbSpecialist.data.id,
+            name: `Dr. ${dbSpecialist.data.first_name} ${dbSpecialist.data.last_name}`,
+            specialty: specialtyName,
+            rating: 4.5, // Default - can be enhanced later
+            experience: '10 years', // Default - can be enhanced later
+            price: 85, // Default - can be enhanced later
+            image: dbSpecialist.data.photo_url || undefined,
+            bio: undefined, // Can be enhanced later
+            languages: ['English'], // Default - can be enhanced later
+            availability: availabilityArray.length > 0 ? availabilityArray : undefined,
+            nextAvailableTime: 'Today 2:00 PM', // Default - can be enhanced later
+          };
+
+          setSpecialist(mappedSpecialist);
+        } else {
+          // Fall back to mock data if not found in database
+          setSpecialist(allSpecialists[id] || null);
+        }
+      } catch (error) {
+        console.error('Error fetching specialist:', error);
+        // Fall back to mock data on error
+        setSpecialist(allSpecialists[id] || null);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchSpecialist();
+  }, [id]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.wrapper}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <StaticSidebar />
+        <ThemedView style={styles.container}>
+          <ActivityIndicator size="large" style={styles.loader} />
+          <ThemedText>Loading specialist...</ThemedText>
+        </ThemedView>
+      </View>
+    );
+  }
 
   if (!specialist) {
     return (
@@ -97,22 +200,104 @@ export default function SpecialistDetailScreen() {
   }
 
 
-  const handleBookAppointment = () => {
-    Alert.alert(
-      'Book Appointment',
-      `Book an appointment with ${specialist.name}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Confirm', 
-          onPress: () => {
-            Alert.alert('Success', 'Your appointment has been booked!');
-            router.back();
-          }
-        },
-      ]
-    );
+  // Generate available appointment times
+  const generateAvailableTimes = () => {
+    const times = [];
+    for (let hour = 9; hour < 17; hour++) {
+      for (let minute = 0; minute < 60; minute += 30) {
+        const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+        const displayTime = new Date(`2000-01-01T${timeStr}`).toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        });
+        times.push({ value: timeStr, display: displayTime });
+      }
+    }
+    return times;
   };
+
+  const handleBookAppointment = () => {
+    setShowBookingModal(true);
+    // Set default date to tomorrow
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    setSelectedDate(tomorrow.toISOString().split('T')[0]);
+  };
+
+  const calculateDuration = () => {
+    if (!startTime || !endTime) return '';
+    
+    const [startHour, startMin] = startTime.split(':').map(Number);
+    const [endHour, endMin] = endTime.split(':').map(Number);
+    
+    const startMinutes = startHour * 60 + startMin;
+    const endMinutes = endHour * 60 + endMin;
+    
+    const durationMinutes = endMinutes - startMinutes;
+    const hours = Math.floor(durationMinutes / 60);
+    const minutes = durationMinutes % 60;
+    
+    if (hours > 0 && minutes > 0) {
+      return `${hours}h ${minutes}m`;
+    } else if (hours > 0) {
+      return `${hours}h`;
+    } else {
+      return `${minutes}m`;
+    }
+  };
+
+  const handleConfirmBooking = async () => {
+    if (!startTime || !endTime || !appointmentPurpose.trim()) {
+      Alert.alert('Error', 'Please select both start and end times and enter a purpose for the appointment.');
+      return;
+    }
+
+    if (startTime >= endTime) {
+      Alert.alert('Error', 'End time must be after start time.');
+      return;
+    }
+
+    if (!user || !userEmail) {
+      Alert.alert('Error', 'You must be logged in to book an appointment.');
+      return;
+    }
+
+    const duration = calculateDuration();
+    
+    // Use the hook to create appointment
+    const result = await createAppointment({
+      specialistId: specialist.id,
+      specialistName: specialist.name,
+      specialistSpecialty: specialist.specialty,
+      specialistPrice: specialist.price,
+      appointmentDate: selectedDate,
+      startTime: startTime,
+      endTime: endTime,
+      duration: duration,
+      purpose: appointmentPurpose,
+    });
+
+    if (!result.success) {
+      Alert.alert('Error', result.error || 'Failed to book appointment. Please try again.');
+      return;
+    }
+
+    setShowBookingModal(false);
+
+    Alert.alert(
+      'Success', 
+      `Your appointment with ${specialist.name} has been booked for ${selectedDate} from ${startTime} to ${endTime} (${duration})!`,
+      [{ text: 'OK', onPress: () => router.push('/(tabs)/schedule') }]
+    );
+
+    // Reset form
+    setStartTime('');
+    setEndTime('');
+    setAppointmentPurpose('');
+  };
+
+  const availableTimes = generateAvailableTimes();
 
   const getGradientColors = (id: string): readonly [string, string] => {
     const gradients: readonly [string, string][] = [
@@ -125,12 +310,30 @@ export default function SpecialistDetailScreen() {
       ['#a8edea', '#fed6e3'],
       ['#ff9a9e', '#fecfef'],
     ];
-    const index = parseInt(id) % gradients.length;
+    // Handle non-numeric IDs by hashing them to a number
+    let numericId = 0;
+    if (id) {
+      // If ID is numeric, use it directly
+      const parsed = parseInt(id);
+      if (!isNaN(parsed)) {
+        numericId = parsed;
+      } else {
+        // Hash the string ID to a number
+        for (let i = 0; i < id.length; i++) {
+          numericId = ((numericId << 5) - numericId) + id.charCodeAt(i);
+          numericId = numericId & numericId; // Convert to 32bit integer
+        }
+        numericId = Math.abs(numericId);
+      }
+    }
+    const index = numericId % gradients.length;
     return gradients[index];
   };
 
-  const gradientColors = getGradientColors(specialist.id);
-  const [activeTab, setActiveTab] = useState<'images' | 'location' | 'info' | 'rating'>('images');
+  // Ensure gradientColors is always defined - use fallback if specialist doesn't exist yet
+  const gradientColors: readonly [string, string] = specialist && specialist.id 
+    ? getGradientColors(specialist.id) 
+    : ['#667eea', '#764ba2'];
 
   return (
     <View style={styles.wrapper}>
@@ -328,6 +531,142 @@ export default function SpecialistDetailScreen() {
           </View>
         </ScrollView>
       </ThemedView>
+
+      {/* Booking Modal */}
+      <Modal
+        visible={showBookingModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowBookingModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Book Appointment</ThemedText>
+              <TouchableOpacity 
+                onPress={() => setShowBookingModal(false)}
+                style={styles.closeModalButton}
+              >
+                <ThemedText style={styles.closeModalText}>✕</ThemedText>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+              <ThemedView style={styles.specialistInfo}>
+                <ThemedText style={styles.modalSpecialistName}>{specialist.name}</ThemedText>
+                <ThemedText style={styles.modalSpecialistSpecialty}>{specialist.specialty}</ThemedText>
+              </ThemedView>
+
+              <View style={styles.formSection}>
+                <ThemedText style={styles.formLabel}>Select Date</ThemedText>
+                <TextInput
+                  style={styles.formInput}
+                  value={selectedDate}
+                  onChangeText={setSelectedDate}
+                  placeholder="YYYY-MM-DD"
+                  placeholderTextColor="#999"
+                />
+              </View>
+
+              <View style={styles.formSection}>
+                <ThemedText style={styles.formLabel}>Start Time</ThemedText>
+                <ScrollView 
+                  style={styles.timeSlotContainer}
+                  showsVerticalScrollIndicator={true}
+                  nestedScrollEnabled={true}
+                >
+                  {availableTimes.map((time, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={[
+                        styles.timeSlot,
+                        startTime === time.value && styles.timeSlotSelected
+                      ]}
+                      onPress={() => setStartTime(time.value)}
+                    >
+                      <ThemedText style={[
+                        styles.timeSlotText,
+                        startTime === time.value && styles.timeSlotTextSelected
+                      ]}>
+                        {time.display}
+                      </ThemedText>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+
+              <View style={styles.formSection}>
+                <ThemedText style={styles.formLabel}>End Time</ThemedText>
+                <ScrollView 
+                  style={styles.timeSlotContainer}
+                  showsVerticalScrollIndicator={true}
+                  nestedScrollEnabled={true}
+                >
+                  {availableTimes.map((time, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={[
+                        styles.timeSlot,
+                        endTime === time.value && styles.timeSlotSelected
+                      ]}
+                      onPress={() => setEndTime(time.value)}
+                    >
+                      <ThemedText style={[
+                        styles.timeSlotText,
+                        endTime === time.value && styles.timeSlotTextSelected
+                      ]}>
+                        {time.display}
+                      </ThemedText>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+
+              {startTime && endTime && (
+                <View style={styles.durationContainer}>
+                  <ThemedText style={styles.durationLabel}>
+                    Meeting Duration: {calculateDuration()}
+                  </ThemedText>
+                </View>
+              )}
+
+              <View style={styles.formSection}>
+                <ThemedText style={styles.formLabel}>Purpose of Appointment</ThemedText>
+                <TextInput
+                  style={[styles.formInput, styles.textArea]}
+                  value={appointmentPurpose}
+                  onChangeText={setAppointmentPurpose}
+                  placeholder="Describe the reason for your appointment..."
+                  placeholderTextColor="#999"
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity 
+                style={styles.cancelButton}
+                onPress={() => setShowBookingModal(false)}
+              >
+                <ThemedText style={styles.cancelButtonText}>Cancel</ThemedText>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.confirmButton, (!startTime || !endTime || !appointmentPurpose.trim() || isCreating) && styles.confirmButtonDisabled]}
+                onPress={handleConfirmBooking}
+                disabled={!startTime || !endTime || !appointmentPurpose.trim() || isCreating}
+              >
+                {isCreating ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <ThemedText style={styles.confirmButtonText}>Confirm Booking</ThemedText>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -579,6 +918,163 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 40,
     opacity: 0.6,
+  },
+  loader: {
+    marginVertical: 20,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    width: '100%',
+    maxWidth: 500,
+    maxHeight: '90%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+  },
+  closeModalButton: {
+    padding: 8,
+  },
+  closeModalText: {
+    fontSize: 24,
+    color: '#666666',
+    fontWeight: '600',
+  },
+  modalBody: {
+    padding: 20,
+  },
+  specialistInfo: {
+    marginBottom: 24,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  modalSpecialistName: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  modalSpecialistSpecialty: {
+    fontSize: 14,
+    opacity: 0.6,
+  },
+  formSection: {
+    marginBottom: 20,
+  },
+  formLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  formInput: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    color: '#000',
+  },
+  textArea: {
+    minHeight: 100,
+    paddingTop: 12,
+  },
+  timeSlotContainer: {
+    maxHeight: 200,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    backgroundColor: '#F8F9FA',
+  },
+  timeSlot: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  timeSlotSelected: {
+    backgroundColor: '#0095f6',
+  },
+  timeSlotText: {
+    fontSize: 14,
+    color: '#666666',
+  },
+  timeSlotTextSelected: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  modalFooter: {
+    flexDirection: 'row',
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+    gap: 12,
+  },
+  cancelButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666666',
+  },
+  confirmButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#0095f6',
+    alignItems: 'center',
+  },
+  confirmButtonDisabled: {
+    backgroundColor: '#CCCCCC',
+  },
+  confirmButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  durationContainer: {
+    marginTop: -16,
+    marginBottom: 20,
+    padding: 12,
+    backgroundColor: '#F0F7FF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#0095f6',
+  },
+  durationLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0095f6',
+    textAlign: 'center',
   },
 });
 

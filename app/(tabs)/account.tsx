@@ -8,6 +8,7 @@ import {
   handleSignUp as authSignUp,
   getAuthErrorMessage,
 } from '@/lib/auth';
+import { router } from 'expo-router';
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
@@ -34,7 +35,10 @@ export default function AccountScreen() {
       const result = await authSignIn(email.trim(), password);
       if (result.success) {
         await refreshAuth();
-        Alert.alert('Success', 'Login successful!');
+        // Wait for React to process state updates before navigation
+        requestAnimationFrame(() => {
+          router.replace('/(tabs)');
+        });
         // Reset form
         setEmail('');
         setPassword('');
@@ -92,18 +96,28 @@ export default function AccountScreen() {
 
     setIsLoading(true);
     try {
-      const result = await authConfirmSignUp(email.trim(), verificationCode.trim());
-      if (result.success) {
-        Alert.alert('Success', 'Account verified successfully!');
-        // Reset form and go back to login
-        setShowVerification(false);
-        setIsSignUp(false);
+      const confirmResult = await authConfirmSignUp(email.trim(), verificationCode.trim());
+      if (confirmResult.success) {
+        // After successful verification, automatically sign the user in
+        const signInResult = await authSignIn(email.trim(), password);
+        if (signInResult.success) {
+          await refreshAuth();
+          // Wait for React to process state updates before navigation
+          requestAnimationFrame(() => {
+            router.replace('/(tabs)');
+          });
+        } else {
+          Alert.alert('Verification Successful', 'Your email has been verified. Please sign in.');
+          setShowVerification(false);
+          setIsSignUp(false);
+        }
+        // Reset form
         setEmail('');
         setPassword('');
         setConfirmPassword('');
         setVerificationCode('');
       } else {
-        Alert.alert('Error', getAuthErrorMessage(result.error!));
+        Alert.alert('Error', getAuthErrorMessage(confirmResult.error!));
       }
     } catch (error) {
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
@@ -318,7 +332,10 @@ export default function AccountScreen() {
             </TouchableOpacity>
 
             {!isSignUp && (
-              <TouchableOpacity style={styles.specialistButton}>
+              <TouchableOpacity
+                style={styles.specialistButton}
+                onPress={() => router.push('/specialist/register')}
+              >
                 <Text style={styles.specialistButtonText}>I'm a specialist</Text>
               </TouchableOpacity>
             )}

@@ -22,7 +22,14 @@ try {
   };
 }
 
+console.log('[AMPLIFY] Configuring Amplify...');
+console.log('[AMPLIFY] Auth config:', {
+  userPoolId: outputs.auth?.user_pool_id,
+  region: outputs.auth?.aws_region,
+  clientId: outputs.auth?.user_pool_client_id
+});
 Amplify.configure(outputs, {
   ssr: true,
 });
+console.log('[AMPLIFY] Configuration complete');
 

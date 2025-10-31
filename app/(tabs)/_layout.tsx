@@ -3,10 +3,12 @@ import React from 'react';
 
 import { CustomLeftTabBar } from '@/components/custom-left-tab-bar';
 import { Colors } from '@/constants/theme';
+import { useAuth } from '@/hooks/use-auth';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const { isAuthenticated } = useAuth();
 
   return (
     <Tabs
@@ -20,21 +22,42 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Home',
-        
         }}
-      
       />
 
       <Tabs.Screen
         name="pricing"
         options={{
           title: 'Pricing',
+          href: isAuthenticated ? null : undefined,
         }}
       />
       <Tabs.Screen
         name="about"
         options={{
           title: 'About',
+          href: isAuthenticated ? null : undefined,
+        }}
+      />
+      <Tabs.Screen
+        name="schedule"
+        options={{
+          title: 'Schedule',
+          href: !isAuthenticated ? null : undefined,
+        }}
+      />
+      <Tabs.Screen
+        name="messages"
+        options={{
+          title: 'Messages',
+          href: !isAuthenticated ? null : undefined,
+        }}
+      />
+      <Tabs.Screen
+        name="notifications"
+        options={{
+          title: 'Notifications',
+          href: !isAuthenticated ? null : undefined,
         }}
       />
       <Tabs.Screen

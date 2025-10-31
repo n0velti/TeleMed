@@ -1,4 +1,5 @@
 import { defineBackend } from '@aws-amplify/backend';
+import { createUser } from './auth/create-user/resource';
 import { auth } from './auth/resource';
 import { data } from './data/resource';
 
@@ -8,4 +9,6 @@ import { data } from './data/resource';
 defineBackend({
   auth,
   data,
+  createUser,
 });
+
