@@ -4,12 +4,13 @@ import { ThemedView } from '@/components/themed-view';
 import { useAppointments, type Appointment } from '@/hooks/use-appointments';
 import { useAuth } from '@/hooks/use-auth';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 
 export default function AppointmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const { appointments, isLoading: appointmentsLoading, fetchAppointments } = useAppointments();
   const { isAuthenticated } = useAuth();
   const [appointment, setAppointment] = useState<Appointment | null>(null);
@@ -53,11 +54,34 @@ export default function AppointmentDetailScreen() {
     );
   }
 
+  /**
+   * Handle joining video call
+   * Navigates to the video call screen with the appointment ID
+   * Security: Only allows joining if user is authenticated and appointment exists
+   */
   const handleJoinCall = () => {
-    const callUrl = `https://meet.example.com/${appointment.id}`;
-    Linking.openURL(callUrl).catch(() => {
-      Alert.alert('Error', 'Could not open video call. Please check your internet connection.');
-    });
+    if (!appointment?.id) {
+      Alert.alert('Error', 'Appointment information is missing.');
+      return;
+    }
+
+    if (!isAuthenticated) {
+      Alert.alert('Authentication Required', 'Please sign in to join the video call.');
+      return;
+    }
+
+    // Validate appointment status - only allow joining if confirmed
+    if (appointment.status?.toLowerCase() !== 'confirmed') {
+      Alert.alert(
+        'Appointment Not Available',
+        `This appointment is ${appointment.status || 'not confirmed'}. Please contact support if you believe this is an error.`
+      );
+      return;
+    }
+
+    // Navigate to video call screen
+    // The video call screen will handle meeting creation and Chime SDK initialization
+    router.push(`/video-call/${appointment.id}`);
   };
 
   const getGradientColors = (): readonly [string, string] => {
