@@ -43,6 +43,7 @@ app-example
 /android
 
 # amplify
+#.amplify/backend
 .amplify
 #amplify_outputs*
 amplifyconfiguration*
