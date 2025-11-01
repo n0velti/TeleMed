@@ -2,16 +2,32 @@ import { Colors } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { handleSignOut } from '@/lib/auth';
+import Octicons from '@expo/vector-icons/Octicons';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { PlatformPressable } from '@react-navigation/elements';
 import * as Haptics from 'expo-haptics';
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 // Helper function to capitalize the first letter of a string
 const capitalizeFirst = (str: string): string => {
   if (!str) return str;
   return str.charAt(0).toUpperCase() + str.slice(1);
+};
+
+// Helper function to get icon name for each route
+const getIconName = (routeName: string): string => {
+  const iconMap: Record<string, string> = {
+    'index': 'home',
+    'pricing': 'credit-card',
+    'about': 'info',
+    'schedule': 'calendar',
+    'messages': 'comment',
+    'notifications': 'bell',
+    'get-care': 'plus-circle',
+    'account': 'person',
+  };
+  return iconMap[routeName] || 'circle';
 };
 
 export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
@@ -20,6 +36,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   const { user, userEmail, isAuthenticated, refreshAuth } = useAuth();
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [messagesQuery, setMessagesQuery] = useState('');
   const [showLogoutMenu, setShowLogoutMenu] = useState(false);
   const [conversations, setConversations] = useState<Array<{ id: string; title: string }>>([
     { id: 'c1', title: 'Dr. Jones' },
@@ -28,6 +45,8 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [showNewConversationModal, setShowNewConversationModal] = useState(false);
   const [newConvQuery, setNewConvQuery] = useState('');
+  const [hoveredTab, setHoveredTab] = useState<string | null>(null);
+  const slideAnim = useRef(new Animated.Value(0)).current;
   const specialists = useMemo(
     () => [
       { id: 's1', name: 'Dr. Emily Jones, MD' },
@@ -63,7 +82,9 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
       const isBottomTab = route.name === 'get-care' || route.name === 'account';
       const shouldHideWhenLoggedIn = route.name === 'pricing' || route.name === 'about';
       const shouldHideWhenLoggedOut = route.name === 'schedule' || route.name === 'messages' || route.name === 'notifications';
+      const isSpecialist = route.name === 'specialist';
       if (isBottomTab) return false;
+      if (isSpecialist) return false;
       if (isAuthenticated && shouldHideWhenLoggedIn) return false;
       if (!isAuthenticated && shouldHideWhenLoggedOut) return false;
       return true;
@@ -83,16 +104,115 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   const messagesRoute = useMemo(() => state.routes.find(r => r.name === 'messages'), [state.routes]);
   const messagesIndex = useMemo(() => (messagesRoute ? state.routes.findIndex(r => r.key === messagesRoute.key) : -1), [state.routes, messagesRoute]);
   const isMessagesFocused = messagesIndex !== -1 && state.index === messagesIndex;
+  const isMessagesExpanded = isMessagesFocused && !isSearchExpanded;
+
+  // Close search when navigating TO messages tab (not when already on messages)
+  const prevMessagesFocused = useRef(false);
+  useEffect(() => {
+    // Only close search if we just navigated TO messages (was false, now true)
+    if (!prevMessagesFocused.current && isMessagesFocused && isSearchExpanded) {
+      setIsSearchExpanded(false);
+      setSearchQuery('');
+    }
+    prevMessagesFocused.current = isMessagesFocused;
+  }, [isMessagesFocused, isSearchExpanded]);
 
   const handleSearchToggle = () => {
     if (process.env.EXPO_OS === 'ios') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    setIsSearchExpanded(!isSearchExpanded);
-    if (isSearchExpanded) {
+    
+    const newState = !isSearchExpanded;
+    
+    // If messages is active and we're opening search, navigate to home first
+    if (isMessagesFocused && newState) {
+      navigateHome();
+      // Small delay to allow navigation to complete before expanding search
+      setTimeout(() => {
+        setIsSearchExpanded(newState);
+        if (!newState) {
+          setSearchQuery('');
+        }
+        
+        // Animate the slide
+        Animated.timing(slideAnim, {
+          toValue: newState ? 1 : 0,
+          duration: 300,
+          useNativeDriver: false, // width animations need layout driver
+        }).start();
+      }, 50);
+      return;
+    }
+    
+    setIsSearchExpanded(newState);
+    if (!newState) {
       setSearchQuery('');
     }
+    
+    // Animate the slide
+    Animated.timing(slideAnim, {
+      toValue: newState ? 1 : 0,
+      duration: 300,
+      useNativeDriver: false, // width animations need layout driver
+    }).start();
   };
+
+  // Calculate animated values
+  // Collapsed width: 12px (container padding) + 12px (button padding) + 18px (icon) + 12px (button padding) + 12px (container padding) = 66px
+  // When search is expanded: 66px (collapsed tabs) + 350px (search width) = 416px
+  // Container width includes search area when expanded
+  const tabBarWidth = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [260, 66],
+  });
+  
+  const containerWidth = useMemo(() => {
+    if (isSearchExpanded || isMessagesExpanded) {
+      // When search or messages is expanded: 66px tabs + 350px panel = 416px
+      return slideAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [260, 416],
+      });
+    } else {
+      // Normal: just the tab bar width
+      return tabBarWidth;
+    }
+  }, [isSearchExpanded, isMessagesExpanded, slideAnim, tabBarWidth]);
+
+  const searchContainerOpacity = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+
+  const searchContainerWidth = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 300],
+  });
+
+  const searchLeftPosition = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [260, 66],
+  });
+
+  const textOpacity = slideAnim.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [1, 0.5, 0],
+  });
+
+  const headerOpacity = slideAnim.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [1, 0.5, 0],
+  });
+
+  // Auto-collapse/expand tab bar when messages or search is focused
+  useEffect(() => {
+    const shouldCollapse = isMessagesExpanded || isSearchExpanded;
+    Animated.timing(slideAnim, {
+      toValue: shouldCollapse ? 1 : 0,
+      duration: 300,
+      useNativeDriver: false,
+    }).start();
+  }, [isMessagesExpanded, isSearchExpanded]);
 
   const handleAccountPress = () => {
     if (isAuthenticated && user) {
@@ -197,31 +317,288 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   };
 
   return (
-    <View style={[
+    <>
+    <Animated.View style={[
       styles.container,
-      isSearchExpanded && styles.expandedContainer,
-      isMessagesFocused && styles.messagesExpandedContainer,
+      {
+        width: containerWidth,
+      }
     ]}>
-      <View style={styles.headerRow}>
-        <Text style={[styles.title, { color: Colors[resolvedScheme].text }]}>
-          TeleMed
-        </Text>
-        {isSearchExpanded && (
-          <TouchableOpacity onPress={handleSearchToggle} style={styles.closeButton}>
-            <Text style={styles.closeButtonText}>✕</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+      <Animated.View
+        style={[
+          styles.animatedContainer,
+          {
+            width: slideAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [260, 66],
+            }),
+          },
+        ]}
+      >
+        <Animated.View
+          style={[
+            styles.headerRow,
+            { opacity: headerOpacity },
+          ]}
+          pointerEvents={isSearchExpanded || isMessagesExpanded ? 'none' : 'auto'}
+        >
+          <Text style={[styles.title, { color: Colors[resolvedScheme].text }]}>
+            TeleMed
+          </Text>
+        </Animated.View>
 
-      {isSearchExpanded ? (
-        <View style={styles.searchContainer}>
+        {/* Always render tabs, but animate text opacity */}
+        <View style={styles.tabsContainer}>
+              {regularTabs.map((route, index) => {
+                const { options } = descriptors[route.key];
+                const label = typeof options.tabBarLabel === 'string'
+                  ? options.tabBarLabel
+                  : options.title !== undefined 
+                  ? options.title 
+                  : capitalizeFirst(route.name);
+
+                const routeIndex = state.routes.findIndex(r => r.key === route.key);
+                // Mark as focused if it's the current route
+                // But if search is expanded, only search button should be active (not home tab)
+                // If messages is expanded, messages tab should be active
+                const isFocused = state.index === routeIndex && 
+                  !(isSearchExpanded && route.name === 'index'); // Don't show home as active when search is expanded
+                const isHovered = hoveredTab === route.key;
+
+                const onPress = () => {
+                  const event = navigation.emit({
+                    type: 'tabPress',
+                    target: route.key,
+                    canPreventDefault: true,
+                  });
+
+                  if (!isFocused && !event.defaultPrevented) {
+                    navigation.navigate(route.name, route.params);
+                  }
+                  
+                  // Close search/messages when clicking a tab icon
+                  if (isSearchExpanded) {
+                    handleSearchToggle();
+                  }
+                  // If clicking messages tab while messages is expanded, it will navigate which collapses it
+                };
+
+                const onLongPress = () => {
+                  navigation.emit({
+                    type: 'tabLongPress',
+                    target: route.key,
+                  });
+                };
+
+                const textColor = isFocused ? 'black' : (isHovered ? '#333333' : '#666666');
+                const iconColor = isFocused ? 'black' : (isHovered ? '#333333' : '#666666');
+
+            return (
+              <React.Fragment key={route.key}>
+                <PlatformPressable
+                  accessibilityRole="button"
+                  accessibilityState={isFocused ? { selected: true } : {}}
+                  accessibilityLabel={options.tabBarAccessibilityLabel}
+                  pressOpacity={1}
+                  onPress={onPress}
+                  onLongPress={onLongPress}
+                  onPressIn={(ev) => {
+                    if (process.env.EXPO_OS === 'ios') {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    }
+                  }}
+                  {...({
+                    onMouseEnter: () => setHoveredTab(route.key),
+                    onMouseLeave: () => setHoveredTab(null),
+                  } as any)}
+                  style={[
+                    styles.tabButton,
+                    isFocused && styles.activeTabButton
+                  ]}
+                  android_ripple={null}
+                  pressRetentionOffset={0}
+                >
+                  <Octicons 
+                    name={getIconName(route.name) as any} 
+                    size={18} 
+                    color={iconColor} 
+                    style={styles.tabIcon}
+                  />
+                  <Animated.Text style={[
+                    styles.tabLabel,
+                    { 
+                      color: textColor,
+                      opacity: textOpacity,
+                    }
+                  ]}>
+                    {label}
+                  </Animated.Text>
+                </PlatformPressable>
+                
+                {/* Add search button after Home tab (first tab) */}
+                {route.name === 'index' && (
+                  <TouchableOpacity
+                    onPress={handleSearchToggle}
+                    style={[
+                      styles.searchButton,
+                      // Show active style when search is expanded
+                      isSearchExpanded && styles.activeTabButton
+                    ]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Search"
+                    {...({
+                      onMouseEnter: () => setHoveredTab('search'),
+                      onMouseLeave: () => setHoveredTab(null),
+                    } as any)}
+                  >
+                    <Octicons 
+                      name="search" 
+                      size={18} 
+                      color={isSearchExpanded ? 'black' : (hoveredTab === 'search' ? '#111111' : '#666666')} 
+                      style={styles.tabIcon}
+                    />
+                    <Animated.Text style={[
+                      styles.searchButtonLabel,
+                      { 
+                        color: isSearchExpanded ? 'black' : (hoveredTab === 'search' ? '#111111' : '#666666'),
+                        opacity: textOpacity,
+                      }
+                    ]}>Search</Animated.Text>
+                  </TouchableOpacity>
+                )}
+              </React.Fragment>
+            );
+          })}
+            </View>
+            
+            {/* Bottom buttons with animated text */}
+            <View style={styles.bottomButtons}>
+                {bottomTabs.map((route, index) => {
+                  const { options } = descriptors[route.key];
+                  const isGetCare = route.name === 'get-care';
+                  const isAccount = route.name === 'account';
+                  
+                  const label = isAccount && isAuthenticated && userEmail
+                    ? userEmail
+                    : typeof options.tabBarLabel === 'string'
+                    ? options.tabBarLabel
+                    : options.title !== undefined 
+                    ? options.title 
+                    : capitalizeFirst(route.name);
+
+                  const routeIndex = state.routes.findIndex(r => r.key === route.key);
+                  // Mark as focused if it's the current route (bottom tabs always show active state)
+                  const isFocused = state.index === routeIndex;
+                  const isHovered = hoveredTab === route.key;
+
+                  const onPress = () => {
+                    if (isAccount && isAuthenticated) {
+                      handleAccountPress();
+                    } else {
+                      const event = navigation.emit({
+                        type: 'tabPress',
+                        target: route.key,
+                        canPreventDefault: true,
+                      });
+
+                      if (!isFocused && !event.defaultPrevented) {
+                        navigation.navigate(route.name, route.params);
+                      }
+                    }
+                  };
+
+                  const iconColor = isGetCare ? 'red' : (isFocused ? 'black' : (isHovered ? '#333333' : '#666666'));
+                  const textColor = isGetCare ? 'red' : (isFocused ? 'black' : (isHovered ? '#333333' : '#666666'));
+
+                  return (
+                    <PlatformPressable
+                      key={route.key}
+                      accessibilityRole="button"
+                      accessibilityState={isFocused ? { selected: true } : {}}
+                      accessibilityLabel={options.tabBarAccessibilityLabel}
+                      pressOpacity={1}
+                      onPress={onPress}
+                      onPressIn={(ev) => {
+                        if (process.env.EXPO_OS === 'ios') {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        }
+                      }}
+                      {...({
+                        onMouseEnter: () => setHoveredTab(route.key),
+                        onMouseLeave: () => setHoveredTab(null),
+                      } as any)}
+                      style={[
+                        isGetCare ? styles.getCareButton : styles.accountButton,
+                        isFocused && (isGetCare ? styles.activeGetCareButton : styles.activeBottomButton)
+                      ]}
+                      android_ripple={null}
+                      pressRetentionOffset={0}
+                    >
+                      <Octicons 
+                        name={getIconName(route.name) as any} 
+                        size={18} 
+                        color={iconColor} 
+                        style={styles.tabIcon}
+                      />
+                      <Animated.Text 
+                        style={[
+                          isGetCare ? styles.getCareText : styles.accountText,
+                          isFocused && styles.activeBottomText,
+                          isAccount && isAuthenticated && userEmail && styles.accountEmailText,
+                          !isGetCare && { color: textColor },
+                          { opacity: textOpacity }
+                        ]}
+                        numberOfLines={1}
+                        ellipsizeMode="middle"
+                      >
+                        {label}
+                      </Animated.Text>
+                    </PlatformPressable>
+                  );
+                })}
+              </View>
+            
+            {/* Collapsed header icon */}
+            <Animated.View
+              style={[
+                styles.collapsedHeader,
+                {
+                  opacity: slideAnim.interpolate({
+                    inputRange: [0, 0.5, 1],
+                    outputRange: [0, 0, 1],
+                  }),
+                  position: 'absolute',
+                  top: 20,
+                  left: 12,
+                  pointerEvents: isSearchExpanded ? 'auto' : 'none',
+                }
+              ]}
+            >
+              <Octicons 
+                name="ai-model" 
+                size={24} 
+                color="black" 
+              />
+            </Animated.View>
+      </Animated.View>
+      
+      {/* Search area - appears next to collapsed tabs */}
+      {isSearchExpanded && (
+        <Animated.View
+          style={[
+            styles.searchContainer,
+            {
+              opacity: searchContainerOpacity,
+            }
+          ]}
+        >
           <TextInput
             style={styles.searchInput}
             placeholder="Search specialists, specialties..."
             placeholderTextColor="#999"
             value={searchQuery}
             onChangeText={setSearchQuery}
-            autoFocus
+            autoFocus={true}
           />
           <ScrollView style={styles.searchResults}>
             {searchQuery.trim() ? (
@@ -236,22 +613,38 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
               </View>
             )}
           </ScrollView>
-        </View>
-      ) : isMessagesFocused ? (
-        <View style={styles.messagesContainer}>
-          <View style={styles.messagesHeaderRow}>
-            <Text style={styles.messagesTitle}>Conversations</Text>
-            <View style={styles.messagesHeaderActions}>
-              <TouchableOpacity onPress={navigateHome} style={styles.closeMessagesButton} accessibilityRole="button" accessibilityLabel="Close messages and go home">
-                <Text style={styles.closeMessagesButtonLabel}>✕</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleCreateConversation} style={styles.newConversationButton} accessibilityRole="button" accessibilityLabel="New conversation">
-                <Text style={styles.newConversationButtonLabel}>+ New</Text>
-              </TouchableOpacity>
-            </View>
+        </Animated.View>
+      )}
+
+      {/* Messages area - appears next to collapsed tabs */}
+      {isMessagesExpanded && (
+        <Animated.View
+          style={[
+            styles.searchContainer,
+            {
+              opacity: searchContainerOpacity,
+            }
+          ]}
+        >
+          <View style={styles.messagesPanelHeader}>
+            <Text style={styles.messagesPanelTitle}>Messages</Text>
+            <TouchableOpacity onPress={handleCreateConversation} style={styles.newConversationButton} accessibilityRole="button" accessibilityLabel="New conversation">
+              <Text style={styles.newConversationButtonLabel}>+ New</Text>
+            </TouchableOpacity>
           </View>
-          <ScrollView style={styles.conversationList}>
-            {conversations.map(conv => {
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search conversations..."
+            placeholderTextColor="#999"
+            value={messagesQuery}
+            onChangeText={setMessagesQuery}
+            autoFocus={false}
+          />
+          <ScrollView style={styles.searchResults}>
+            {(messagesQuery.trim() 
+              ? conversations.filter(conv => conv.title.toLowerCase().includes(messagesQuery.toLowerCase()))
+              : conversations
+            ).map(conv => {
               const isSelected = conv.id === selectedConversationId;
               return (
                 <TouchableOpacity
@@ -275,166 +668,11 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
               </View>
             )}
           </ScrollView>
-        </View>
-      ) : (
-        <View style={styles.tabsContainer}>
-          {regularTabs.map((route, index) => {
-            const { options } = descriptors[route.key];
-            const label = typeof options.tabBarLabel === 'string'
-              ? options.tabBarLabel
-              : options.title !== undefined 
-              ? options.title 
-              : capitalizeFirst(route.name);
-
-            const routeIndex = state.routes.findIndex(r => r.key === route.key);
-            const isFocused = state.index === routeIndex;
-
-            const onPress = () => {
-              const event = navigation.emit({
-                type: 'tabPress',
-                target: route.key,
-                canPreventDefault: true,
-              });
-
-              if (!isFocused && !event.defaultPrevented) {
-                navigation.navigate(route.name, route.params);
-              }
-            };
-
-            const onLongPress = () => {
-              navigation.emit({
-                type: 'tabLongPress',
-                target: route.key,
-              });
-            };
-
-            return (
-              <React.Fragment key={route.key}>
-                <PlatformPressable
-                  accessibilityRole="button"
-                  accessibilityState={isFocused ? { selected: true } : {}}
-                  accessibilityLabel={options.tabBarAccessibilityLabel}
-                  pressOpacity={1}
-                  onPress={onPress}
-                  onLongPress={onLongPress}
-                  onPressIn={(ev) => {
-                    if (process.env.EXPO_OS === 'ios') {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    }
-                  }}
-                  style={[
-                    styles.tabButton,
-                    isFocused && styles.activeTabButton
-                  ]}
-                  android_ripple={null}
-                  pressRetentionOffset={0}
-                >
-                  <Text style={[
-                    styles.tabLabel,
-                    { 
-                      color: isFocused ? 'black' : '#666666'
-                    }
-                  ]}>
-                    {label}
-                  </Text>
-                </PlatformPressable>
-                
-                {/* Add search button after Home tab (first tab) */}
-                {route.name === 'index' && (
-                  <TouchableOpacity
-                    onPress={handleSearchToggle}
-                    style={styles.searchButton}
-                    accessibilityRole="button"
-                    accessibilityLabel="Search"
-                  >
-                    <Text style={styles.searchButtonLabel}>Search</Text>
-                  </TouchableOpacity>
-                )}
-              </React.Fragment>
-            );
-          })}
-        </View>
+        </Animated.View>
       )}
-      
-      <View style={styles.bottomButtons}>
-        {bottomTabs.map((route, index) => {
-          const { options } = descriptors[route.key];
-          const isGetCare = route.name === 'get-care';
-          const isAccount = route.name === 'account';
-          
-          // For account button, show email if authenticated, otherwise show "Account"
-          const label = isAccount && isAuthenticated && userEmail
-            ? userEmail
-            : typeof options.tabBarLabel === 'string'
-            ? options.tabBarLabel
-            : options.title !== undefined 
-            ? options.title 
-            : capitalizeFirst(route.name);
+    </Animated.View>
 
-          const routeIndex = state.routes.findIndex(r => r.key === route.key);
-          const isFocused = state.index === routeIndex;
-
-          const onPress = () => {
-            if (isAccount && isAuthenticated) {
-              handleAccountPress();
-            } else {
-              const event = navigation.emit({
-                type: 'tabPress',
-                target: route.key,
-                canPreventDefault: true,
-              });
-
-              if (!isFocused && !event.defaultPrevented) {
-                navigation.navigate(route.name, route.params);
-              }
-            }
-          };
-
-          const onLongPress = () => {
-            navigation.emit({
-              type: 'tabLongPress',
-              target: route.key,
-            });
-          };
-
-          return (
-            <PlatformPressable
-              key={route.key}
-              accessibilityRole="button"
-              accessibilityState={isFocused ? { selected: true } : {}}
-              accessibilityLabel={options.tabBarAccessibilityLabel}
-              pressOpacity={1}
-              onPress={onPress}
-              onLongPress={onLongPress}
-              onPressIn={(ev) => {
-                if (process.env.EXPO_OS === 'ios') {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                }
-              }}
-              style={[
-                isGetCare ? styles.getCareButton : styles.accountButton,
-                isFocused && (isGetCare ? styles.activeGetCareButton : styles.activeBottomButton)
-              ]}
-              android_ripple={null}
-              pressRetentionOffset={0}
-            >
-              <Text 
-                style={[
-                  isGetCare ? styles.getCareText : styles.accountText,
-                  isFocused && styles.activeBottomText,
-                  isAccount && isAuthenticated && userEmail && styles.accountEmailText
-                ]}
-                numberOfLines={1}
-                ellipsizeMode="middle"
-              >
-                {label}
-              </Text>
-            </PlatformPressable>
-          );
-        })}
-      </View>
-
-      {/* Logout Menu Modal */}
+    {/* Logout Menu Modal */}
       <Modal
         visible={showNewConversationModal}
         transparent={true}
@@ -516,30 +754,96 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
-    </View>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    width: 260,
+    flexDirection: 'row',
+    position: 'relative',
+    overflow: 'visible',
+    flexShrink: 0,
+  },
+  searchLayout: {
+    flex: 1,
+  },
+  animatedContainer: {
     paddingTop: 20,
     paddingHorizontal: 12,
+    paddingBottom: 20,
     backgroundColor: 'white',
     borderRightWidth: 1,
     borderRightColor: '#E0E0E0',
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    flexDirection: 'column',
   },
   expandedContainer: {
     width: 500,
   },
-  messagesExpandedContainer: {
-    width: 380,
+  collapsedContainer: {
+    width: 'auto',
+    paddingHorizontal: 12,
+    borderRightWidth: 0,
+  },
+  messagesPanelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  messagesPanelTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#111827',
+  },
+  collapsedLayout: {
+    flex: 1,
+    flexDirection: 'row',
+  },
+  collapsedTabsContainer: {
+    width: 48,
+    paddingTop: 20,
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingBottom: 20,
+    borderRightWidth: 1,
+    borderRightColor: '#E0E0E0',
+    flexShrink: 0,
+    flexDirection: 'column',
+    justifyContent: 'space-between',
+  },
+  collapsedHeader: {
+    paddingLeft: 12,
+    paddingBottom: 40,
+    paddingTop: 0,
+    width: '100%',
+  },
+  collapsedTabsTop: {
+    flexGrow: 1,
+  },
+  collapsedTabsBottom: {
+    paddingTop: 20,
+  },
+  collapsedTabButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    width: '100%',
+    minHeight: 42,
   },
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 40,
+    marginBottom: 60,
   },
   title: {
     fontSize: 19,
@@ -561,38 +865,51 @@ const styles = StyleSheet.create({
   tabButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'flex-start',
     paddingVertical: 10,
     paddingHorizontal: 12,
-    marginBottom: 6,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'transparent',
+    marginBottom: 8,
+    borderRadius: 9,
+    width: '100%',
   },
   activeTabButton: {
-    borderColor: 'black',
+    backgroundColor: '#EDEDED',
   },
   tabLabel: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
+  },
+  tabIcon: {
+    marginRight: 14,
+    width: 18,
+    height: 18,
   },
   searchButton: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
     paddingHorizontal: 12,
-    marginBottom: 6,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: 'transparent',
+    marginBottom: 8,
+    borderRadius: 9,
+    width: '100%',
+    justifyContent: 'flex-start',
   },
   searchButtonLabel: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
     color: '#666666',
   },
   searchContainer: {
-    flex: 1,
+    width: 350,
     paddingBottom: 20,
+    paddingTop: 20,
+    paddingHorizontal: 24,
+    backgroundColor: 'white',
+    borderRightWidth: 1,
+    borderRightColor: '#E0E0E0',
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    flexGrow: 0,
   },
   searchInput: {
     backgroundColor: '#F8F9FA',
@@ -602,7 +919,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     borderWidth: 1,
     borderColor: '#E0E0E0',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   searchResults: {
     flex: 1,
@@ -610,12 +927,13 @@ const styles = StyleSheet.create({
   messagesContainer: {
     flex: 1,
     paddingBottom: 20,
+    paddingTop: 20,
+    paddingHorizontal: 12,
   },
   messagesHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 12,
     marginBottom: 10,
   },
   messagesHeaderActions: {
@@ -657,7 +975,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   conversationItem: {
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 12,
     borderRadius: 6,
     borderWidth: 1,
@@ -716,42 +1034,44 @@ const styles = StyleSheet.create({
   getCareButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 12,
     marginBottom: 6,
-    borderRadius: 6,
+    borderRadius: 9,
     borderWidth: 1,
     borderColor: 'transparent',
     backgroundColor: '#FFE5E5',
   },
   getCareText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '600',
     color: 'red',
   },
   accountButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 12,
     marginBottom: 6,
-    borderRadius: 6,
+    borderRadius: 9,
     borderWidth: 1,
     borderColor: 'transparent',
     backgroundColor: '#F5F5F5',
   },
   accountText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: '500',
     color: '#666666',
   },
   activeBottomButton: {
     borderWidth: 1,
-    borderColor: 'black',
+    borderColor: 'transparent',
+    backgroundColor: '#EDEDED',
   },
   activeGetCareButton: {
     borderWidth: 1,
-    borderColor: 'red',
+    borderColor: 'transparent',
+    backgroundColor: '#FFE5E5',
   },
   activeBottomText: {
     fontWeight: '600',
@@ -815,7 +1135,7 @@ const styles = StyleSheet.create({
     borderColor: '#E5E7EB',
     borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 9,
     fontSize: 14,
     marginBottom: 10,
   },
@@ -823,7 +1143,7 @@ const styles = StyleSheet.create({
     maxHeight: 320,
   },
   newConvResultItem: {
-    paddingVertical: 10,
+    paddingVertical: 9,
     paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',

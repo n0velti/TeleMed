@@ -28,7 +28,7 @@ export function SpecialistSection({ title, specialists, onSpecialistPress, onTit
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(true);
 
-  const scrollStep = 322; // Width of card (310) + margin (12)
+  const scrollStep = 297; // Width of card (285) + margin (12)
 
   const scrollLeft = () => {
     if (flatListRef.current && scrollPosition > 0) {
@@ -122,11 +122,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   title: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 'bold',
   },
   titleArrow: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 'bold',
     opacity: 0.6,
   },

@@ -1,4 +1,3 @@
-import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
@@ -29,7 +28,6 @@ export function SpecialistCard({
   onPress 
 }: SpecialistCardProps) {
   const colorScheme = useColorScheme();
-  const colors = Colors[colorScheme ?? 'light'];
 
   // Generate a gradient background color based on doctor's ID for variety
   const getGradientColors = (id: string): readonly [string, string] => {
@@ -114,8 +112,8 @@ export function SpecialistCard({
 
 const styles = StyleSheet.create({
   card: {
-    width: 340,
-    height: 200,
+    width: 300,
+    height: 170,
     marginRight: 12,
     overflow: 'hidden',
   },
@@ -136,14 +134,14 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    padding: 16,
+    padding: 12,
     justifyContent: 'flex-end',
   },
   bottomInfo: {
-    gap: 6,
+    gap: 4,
   },
   name: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     color: '#fff',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
@@ -151,7 +149,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
   availableTime: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '500',
     color: '#fff',
     opacity: 0.9,
@@ -166,7 +164,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   rating: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#fff',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
@@ -174,7 +172,7 @@ const styles = StyleSheet.create({
     textShadowRadius: 3,
   },
   price: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     color: '#fff',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',

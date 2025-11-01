@@ -105,7 +105,7 @@ export default function SpecialistCategoryScreen() {
   };
 
   const handleSpecialistPress = (specialist: Specialist) => {
-    router.push(`/specialist/${specialist.id}`);
+    router.push(`/(tabs)/specialist/${specialist.id}`);
   };
 
   const renderSpecialist = ({ item }: { item: Specialist }) => (

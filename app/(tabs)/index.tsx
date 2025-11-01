@@ -5,7 +5,7 @@ import { ThemedView } from '@/components/themed-view';
 import { generateClient } from 'aws-amplify/data';
 import { router } from 'expo-router';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 const client = generateClient<Schema>();
 
@@ -198,7 +198,7 @@ export default function HomeScreen() {
   }, []);
 
   const handleSpecialistPress = (specialist: Specialist) => {
-    router.push(`/specialist/${specialist.id}`);
+    router.push(`/(tabs)/specialist/${specialist.id}`);
   };
 
   const handleTitlePress = (title: string) => {
@@ -286,184 +286,6 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      {/* Fixed Top Bar */}
-      <View style={styles.topBar}>
-        <View style={styles.filtersContainer}>
-          {/* Price Filter Dropdown */}
-          <View style={styles.dropdownContainer}>
-            <TouchableOpacity 
-              style={styles.dropdownButton}
-              onPress={() => {
-                setShowPriceDropdown(!showPriceDropdown);
-                setShowAvailabilityDropdown(false);
-                setShowRatingDropdown(false);
-              }}
-            >
-              <Text style={styles.dropdownLabel}>Price</Text>
-              <Text style={styles.dropdownValue}>{getPriceLabel()}</Text>
-              <Text style={styles.dropdownArrow}>{showPriceDropdown ? '▲' : '▼'}</Text>
-            </TouchableOpacity>
-            
-            {showPriceDropdown && (
-              <View style={styles.dropdownMenu}>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setPriceFilter('all');
-                    setShowPriceDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, priceFilter === 'all' && styles.dropdownItemTextActive]}>
-                    All Prices
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setPriceFilter('low');
-                    setShowPriceDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, priceFilter === 'low' && styles.dropdownItemTextActive]}>
-                    $ {'(<$100)'}
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setPriceFilter('medium');
-                    setShowPriceDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, priceFilter === 'medium' && styles.dropdownItemTextActive]}>
-                    $$ ($100-140)
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setPriceFilter('high');
-                    setShowPriceDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, priceFilter === 'high' && styles.dropdownItemTextActive]}>
-                    $$$ ($140+)
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-
-          {/* Availability Filter Dropdown */}
-          <View style={styles.dropdownContainer}>
-            <TouchableOpacity 
-              style={styles.dropdownButton}
-              onPress={() => {
-                setShowAvailabilityDropdown(!showAvailabilityDropdown);
-                setShowPriceDropdown(false);
-                setShowRatingDropdown(false);
-              }}
-            >
-              <Text style={styles.dropdownLabel}>Availability</Text>
-              <Text style={styles.dropdownValue}>{getAvailabilityLabel()}</Text>
-              <Text style={styles.dropdownArrow}>{showAvailabilityDropdown ? '▲' : '▼'}</Text>
-            </TouchableOpacity>
-            
-            {showAvailabilityDropdown && (
-              <View style={styles.dropdownMenu}>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setAvailabilityFilter('all');
-                    setShowAvailabilityDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, availabilityFilter === 'all' && styles.dropdownItemTextActive]}>
-                    All Times
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setAvailabilityFilter('today');
-                    setShowAvailabilityDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, availabilityFilter === 'today' && styles.dropdownItemTextActive]}>
-                    Available Today
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-
-          {/* Rating Filter Dropdown */}
-          <View style={styles.dropdownContainer}>
-            <TouchableOpacity 
-              style={styles.dropdownButton}
-              onPress={() => {
-                setShowRatingDropdown(!showRatingDropdown);
-                setShowPriceDropdown(false);
-                setShowAvailabilityDropdown(false);
-              }}
-            >
-              <Text style={styles.dropdownLabel}>Rating</Text>
-              <Text style={styles.dropdownValue}>{getRatingLabel()}</Text>
-              <Text style={styles.dropdownArrow}>{showRatingDropdown ? '▲' : '▼'}</Text>
-            </TouchableOpacity>
-            
-            {showRatingDropdown && (
-              <View style={styles.dropdownMenu}>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setRatingFilter('all');
-                    setShowRatingDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, ratingFilter === 'all' && styles.dropdownItemTextActive]}>
-                    All Ratings
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setRatingFilter('4.5');
-                    setShowRatingDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, ratingFilter === '4.5' && styles.dropdownItemTextActive]}>
-                    4.5+ Stars
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setRatingFilter('4.7');
-                    setShowRatingDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, ratingFilter === '4.7' && styles.dropdownItemTextActive]}>
-                    4.7+ Stars
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity 
-                  style={styles.dropdownItem}
-                  onPress={() => {
-                    setRatingFilter('4.9');
-                    setShowRatingDropdown(false);
-                  }}
-                >
-                  <Text style={[styles.dropdownItemText, ratingFilter === '4.9' && styles.dropdownItemTextActive]}>
-                    4.9+ Stars
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        </View>
-      </View>
-      
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         <ThemedView style={styles.sectionsContainer}>
           {/* Always show Family Medicine section first */}
@@ -508,90 +330,6 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  topBar: {
-    paddingTop: 50,
-    paddingBottom: 6,
-    paddingHorizontal: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E5E5',
-    zIndex: 1000,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  filtersContainer: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-    flexWrap: 'nowrap',
-  },
-  dropdownContainer: {
-    width: 145,
-    position: 'relative',
-  },
-  dropdownButton: {
-    backgroundColor: '#F8F9FA',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    height: 32,
-  },
-  dropdownLabel: {
-    fontSize: 10,
-    color: '#687076',
-    fontWeight: '600',
-    marginRight: 3,
-    flexShrink: 0,
-  },
-  dropdownValue: {
-    fontSize: 11,
-    color: '#0a7ea4',
-    fontWeight: '600',
-    flex: 1,
-  },
-  dropdownArrow: {
-    fontSize: 9,
-    color: '#0a7ea4',
-    marginLeft: 3,
-  },
-  dropdownMenu: {
-    position: 'absolute',
-    top: 36,
-    left: 0,
-    right: 0,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E5E5E5',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 5,
-    zIndex: 2000,
-    overflow: 'hidden',
-  },
-  dropdownItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0F0',
-  },
-  dropdownItemText: {
-    fontSize: 12,
-    color: '#11181C',
-  },
-  dropdownItemTextActive: {
-    color: '#0a7ea4',
-    fontWeight: '600',
   },
   scrollView: {
     flex: 1,
