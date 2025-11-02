@@ -33,6 +33,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
   
   // Refs for Chime SDK and DOM elements
   const meetingSessionRef = useRef<any>(null);
+  const deviceControllerRef = useRef<any>(null);
   const localVideoElementRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoElementRef = useRef<HTMLVideoElement | null>(null);
   const currentUserIdRef = useRef<string | null>(null);
@@ -196,6 +197,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
 
         const logger = new ConsoleLogger('VideoCall', LogLevel.INFO);
         const deviceController = new DefaultDeviceController(logger);
+        deviceControllerRef.current = deviceController; // Store device controller ref
         // @ts-ignore - DefaultEventController constructor signature
         const eventController = new DefaultEventController(logger);
         
@@ -1041,6 +1043,9 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
           attendeeId: tileState.attendeeId,
           isLocal: tileState.isLocal,
           active: tileState.active,
+          boundVideoElement: tileState.boundVideoElement ? 'Present' : 'Not bound',
+          videoStreamContentWidth: tileState.videoStreamContentWidth,
+          videoStreamContentHeight: tileState.videoStreamContentHeight,
         });
 
         // Handle LOCAL video tile - SIMPLE: bind when active
@@ -1170,6 +1175,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
    */
   const enableMedia = async (meetingSession: any) => {
     const audioVideo = meetingSession.audioVideo;
+    const deviceController = deviceControllerRef.current;
     
     // Audio is automatically enabled when session starts
     
@@ -1190,20 +1196,31 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         }
         
         // Get video device and select it
-        const devices = await audioVideo.listVideoInputDevices();
-        if (devices.length > 0) {
-          await audioVideo.chooseVideoInputDevice(devices[0].deviceId);
-          console.log('[VIDEO_CALL] ✓ Video device selected');
+        // In v3.0+, listVideoInputDevices is on audioVideo facade
+        try {
+          const devices = await audioVideo.listVideoInputDevices();
+          console.log('[VIDEO_CALL] Available video devices:', devices.length);
+          if (devices.length > 0) {
+            // Use startVideoInput (v3.0+) instead of chooseVideoInputDevice (v2.x)
+            await audioVideo.startVideoInput(devices[0].deviceId);
+            console.log('[VIDEO_CALL] ✓ Video device selected:', devices[0].label);
+          }
+        } catch (deviceError: any) {
+          console.warn('[VIDEO_CALL] Device selection error:', deviceError?.message);
+          // Continue anyway - video might still work with default device
         }
         
         // CRITICAL: Only start video tile when session is ready
         // The observer will handle binding when tile becomes active
         console.log('[VIDEO_CALL] Starting video tile...');
         await audioVideo.startLocalVideoTile();
-        console.log('[VIDEO_CALL] ✓ Video tile started (will bind when active)');
+        console.log('[VIDEO_CALL] ✓ Video tile started');
         
-        // Don't try to bind immediately - let the observer handle it
+        // Try immediate bind, but observer will handle binding when tile becomes active
         // The tile needs time to become active after session is connected
+        setTimeout(() => {
+          bindLocalVideo(audioVideo);
+        }, 500);
         
       } catch (error: any) {
         console.error('[VIDEO_CALL] Video error:', error?.message);
@@ -1215,16 +1232,31 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
    * Bind local video to the video element - SIMPLE version
    */
   const bindLocalVideo = (audioVideo: any) => {
-    if (!localVideoElementRef.current) return false;
+    if (!localVideoElementRef.current) {
+      console.log('[VIDEO_CALL] Cannot bind: no video element');
+      return false;
+    }
     
     try {
       const tile = audioVideo.getLocalVideoTile();
-      if (!tile || !tile.state().active) return false;
+      if (!tile) {
+        console.log('[VIDEO_CALL] Cannot bind: no local video tile');
+        return false;
+      }
       
       const tileState = tile.state();
+      console.log('[VIDEO_CALL] Attempting to bind local video:', {
+        tileId: tileState.tileId,
+        active: tileState.active,
+        boundTo: tileState.boundVideoElement ? 'Another element' : 'Nothing',
+      });
+      
+      // Try binding even if not active yet - observer will re-check
       if (tileState.boundVideoElement !== localVideoElementRef.current) {
         audioVideo.bindVideoElement(tileState.tileId, localVideoElementRef.current);
-        console.log('[VIDEO_CALL] ✓ Video bound');
+        console.log('[VIDEO_CALL] ✓ Video bound successfully');
+      } else {
+        console.log('[VIDEO_CALL] Already bound to this element');
       }
       return true;
     } catch (error) {
