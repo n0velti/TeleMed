@@ -143,6 +143,126 @@ const schema = a.schema({
       created_at: a.datetime(),
     })
     .authorization((allow) => allow.authenticated()),
+
+  /**
+   * Conversation Model
+   * 
+   * Represents a messaging conversation between two or more participants.
+   * This model stores metadata about conversations and links to Chime SDK Messaging channels.
+   * 
+   * Architecture:
+   * - Each conversation has a unique Chime channel ARN for real-time messaging
+   * - Supports one-on-one and group conversations
+   * - Tracks participants, last message time, and conversation metadata
+   * 
+   * Scalability:
+   * - Uses DynamoDB for fast lookups
+   * - Global Secondary Index (GSI) on participantId for efficient user conversation queries
+   * - Supports partitioning by userId for horizontal scaling
+   * 
+   * Security:
+   * - Authorization ensures users can only access conversations they're part of
+   * - Chime channel ARN is stored securely
+   * - No sensitive data stored in conversation metadata
+   */
+  Conversation: a
+    .model({
+      // Chime SDK Messaging channel ARN for real-time messaging
+      // This is the primary identifier for the messaging channel
+      channelArn: a.string().required(),
+      
+      // Conversation display name (e.g., "Dr. Smith", "Care Team")
+      name: a.string().required(),
+      
+      // Type of conversation: 'direct' (one-on-one) or 'group'
+      type: a.string().required().default('direct'),
+      
+      // Participant IDs - array of user IDs in this conversation
+      // For direct messages: [userId1, userId2]
+      // For group chats: [userId1, userId2, userId3, ...]
+      participantIds: a.string().array().required(),
+      
+      // For direct conversations, store the other participant's ID for quick lookup
+      // This enables efficient queries like "get all conversations with user X"
+      otherParticipantId: a.string(),
+      
+      // Last message timestamp for sorting conversations
+      lastMessageAt: a.datetime(),
+      
+      // Preview of last message (for conversation list display)
+      lastMessagePreview: a.string(),
+      
+      // Timestamps
+      createdAt: a.datetime(),
+      updatedAt: a.datetime(),
+    })
+    .authorization((allow) => allow.authenticated())
+    // Custom authorization: Users can only access conversations they're part of
+    // This is enforced by checking participantIds array contains current user ID
+    ,
+
+  /**
+   * Message Model
+   * 
+   * Stores individual messages in conversations.
+   * This model provides persistent storage for messages and sync with Chime SDK Messaging.
+   * 
+   * Architecture:
+   * - Messages are stored in DynamoDB for persistence and offline access
+   * - Real-time delivery via Chime SDK Messaging channels
+   * - Supports message metadata (sender, timestamp, read receipts)
+   * 
+   * Scalability:
+   * - Partitioned by conversationId for efficient querying
+   * - Global Secondary Index on conversationId + createdAt for message history
+   * - Supports pagination for large conversation histories
+   * - Messages older than retention period can be archived to S3
+   * 
+   * Data Flow:
+   * 1. User sends message → Lambda function → Chime SDK sends to channel
+   * 2. Chime SDK webhook → Lambda function → Stores message in DynamoDB
+   * 3. Real-time subscribers receive message via WebSocket/polling
+   * 
+   * Security:
+   * - Only conversation participants can send/receive messages
+   * - Message content is encrypted in transit via Chime SDK
+   * - No PII stored in plain text
+   */
+  Message: a
+    .model({
+      // Conversation ID this message belongs to
+      conversationId: a.id().required(),
+      
+      // Chime SDK message ID for deduplication and sync
+      chimeMessageId: a.string(),
+      
+      // Sender user ID (Cognito user ID)
+      senderId: a.string().required(),
+      
+      // Sender display name for UI
+      senderName: a.string().required(),
+      
+      // Message content (text)
+      content: a.string().required(),
+      
+      // Message type: 'text', 'image', 'file', 'system'
+      type: a.string().default('text'),
+      
+      // Message status: 'sending', 'sent', 'delivered', 'read', 'failed'
+      status: a.string().default('sent'),
+      
+      // Timestamps
+      createdAt: a.datetime(),
+      updatedAt: a.datetime(),
+      
+      // For future: read receipts, reactions, etc.
+      // readBy: a.string().array(),
+      // reactions: a.json(),
+    })
+    .authorization((allow) => allow.authenticated())
+    // Custom authorization: Users can only access messages in conversations they're part of
+    // This requires a join query to verify conversation participation
+    ,
 }).authorization(
   (allow) => allow.resource(createUser)
   

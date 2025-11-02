@@ -96,7 +96,7 @@ export default function SpecialistDetailScreen() {
   const [appointmentPurpose, setAppointmentPurpose] = useState('');
   const [specialist, setSpecialist] = useState<Specialist | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'images' | 'location' | 'info' | 'rating'>('images');
+  const [activeTab, setActiveTab] = useState<'images' | 'pricing' | 'info' | 'rating'>('images');
 
   // Fetch specialist from database
   useEffect(() => {
@@ -331,59 +331,75 @@ export default function SpecialistDetailScreen() {
         <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.profileContainer}>
             {/* Profile Header */}
-            <ThemedView style={styles.profileHeader}>
-            {/* Profile Picture */}
-            <LinearGradient
-              colors={gradientColors}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.profilePicture}
-            >
-              <ThemedText style={styles.initialsText}>
-                {specialist.name.split(' ').map(n => n[0]).join('')}
-              </ThemedText>
-            </LinearGradient>
+            <View style={styles.profileHeader}>
+              {/* Profile Picture with Gradient Border */}
+              <View style={styles.profilePictureContainer}>
+                <LinearGradient
+                  colors={gradientColors}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.profilePictureBorder}
+                >
+                  <LinearGradient
+                    colors={gradientColors}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.profilePictureInner}
+                  >
+                    <ThemedText style={styles.initialsText}>
+                      {specialist.name.split(' ').map(n => n[0]).join('')}
+                    </ThemedText>
+                  </LinearGradient>
+                </LinearGradient>
+              </View>
 
-            {/* Stats Row */}
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <ThemedText style={styles.statNumber}>{specialist.experience}</ThemedText>
-                <ThemedText style={styles.statLabel}>Experience</ThemedText>
-              </View>
-              <View style={styles.statItem}>
-                <ThemedText style={styles.statNumber}>{specialist.rating}</ThemedText>
-                <ThemedText style={styles.statLabel}>Rating</ThemedText>
-              </View>
-              <View style={styles.statItem}>
-                <ThemedText style={styles.statNumber}>${specialist.price}</ThemedText>
-                <ThemedText style={styles.statLabel}>Per Session</ThemedText>
+              {/* Name and Info Row */}
+              <View style={styles.nameInfoContainer}>
+                <View style={styles.nameRow}>
+                  <ThemedText style={styles.profileName}>{specialist.name}</ThemedText>
+                  <View style={styles.verifiedBadge}>
+                    <ThemedText style={styles.verifiedText}>✓</ThemedText>
+                  </View>
+                </View>
+                <ThemedText style={styles.profileSpecialty}>{specialist.specialty}</ThemedText>
+
+                {/* Stats Row */}
+                <View style={styles.statsRow}>
+                  <View style={styles.statItem}>
+                    <ThemedText style={styles.statNumber}>127</ThemedText>
+                    <ThemedText style={styles.statLabel}>Reviews</ThemedText>
+                  </View>
+                  <View style={styles.statItem}>
+                    <ThemedText style={styles.statNumber}>4.8</ThemedText>
+                    <ThemedText style={styles.statLabel}>Rating</ThemedText>
+                  </View>
+                  <View style={styles.statItem}>
+                    <ThemedText style={styles.statNumber}>12</ThemedText>
+                    <ThemedText style={styles.statLabel}>Experience</ThemedText>
+                  </View>
+                </View>
+
+                {/* Bio */}
+                <ThemedText style={styles.profileBio}>{specialist.bio}</ThemedText>
+                
+                {/* Action Buttons */}
+                <View style={styles.actionButtonsRow}>
+                  <TouchableOpacity 
+                    style={styles.followButton}
+                    onPress={handleBookAppointment}
+                    activeOpacity={0.8}
+                  >
+                    <ThemedText style={styles.followButtonText}>Book Appointment</ThemedText>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.messageButton} activeOpacity={0.8}>
+                    <ThemedText style={styles.messageButtonText}>Message</ThemedText>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.addButton} activeOpacity={0.8}>
+                    <ThemedText style={styles.addButtonText}>+</ThemedText>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
-
-            {/* Name and Bio */}
-            <View style={styles.profileInfo}>
-              <ThemedText style={styles.profileName}>{specialist.name}</ThemedText>
-              <ThemedText style={styles.profileSpecialty}>{specialist.specialty}</ThemedText>
-              <ThemedText style={styles.profileBio}>{specialist.bio}</ThemedText>
-            </View>
-
-            {/* Next Available Time */}
-            {specialist.nextAvailableTime && (
-              <View style={styles.nextAvailableContainer}>
-                <ThemedText style={styles.nextAvailableLabel}>Next Available</ThemedText>
-                <ThemedText style={styles.nextAvailableTime}>🕐 {specialist.nextAvailableTime}</ThemedText>
-              </View>
-            )}
-
-            {/* Action Button */}
-            <TouchableOpacity 
-              style={styles.bookButton}
-              onPress={handleBookAppointment}
-              activeOpacity={0.8}
-            >
-              <ThemedText style={styles.bookButtonText}>Book Appointment</ThemedText>
-            </TouchableOpacity>
-          </ThemedView>
 
           {/* Tabs */}
           <View style={styles.tabsContainer}>
@@ -396,11 +412,11 @@ export default function SpecialistDetailScreen() {
               </ThemedText>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.tab, activeTab === 'location' && styles.activeTab]}
-              onPress={() => setActiveTab('location')}
+              style={[styles.tab, activeTab === 'pricing' && styles.activeTab]}
+              onPress={() => setActiveTab('pricing')}
             >
-              <ThemedText style={[styles.tabText, activeTab === 'location' && styles.activeTabText]}>
-                Location
+              <ThemedText style={[styles.tabText, activeTab === 'pricing' && styles.activeTabText]}>
+                Pricing
               </ThemedText>
             </TouchableOpacity>
             <TouchableOpacity 
@@ -408,7 +424,7 @@ export default function SpecialistDetailScreen() {
               onPress={() => setActiveTab('info')}
             >
               <ThemedText style={[styles.tabText, activeTab === 'info' && styles.activeTabText]}>
-                Other Info
+                Info
               </ThemedText>
             </TouchableOpacity>
             <TouchableOpacity 
@@ -424,7 +440,7 @@ export default function SpecialistDetailScreen() {
           {/* Tab Content */}
           {activeTab === 'images' && (
             <View style={styles.tabContent}>
-              <View style={styles.grid}>
+              <View style={styles.contentGrid}>
                 {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((index) => {
                   const photoGradients: readonly [string, string][] = [
                     ['#667eea', '#764ba2'],
@@ -451,14 +467,30 @@ export default function SpecialistDetailScreen() {
             </View>
           )}
 
-          {activeTab === 'location' && (
+          {activeTab === 'pricing' && (
             <View style={styles.tabContent}>
-              <View style={styles.locationContent}>
-                <ThemedText style={styles.locationTitle}>Office Location</ThemedText>
-                <ThemedText style={styles.locationText}>123 Medical Plaza</ThemedText>
-                <ThemedText style={styles.locationText}>Suite 456</ThemedText>
-                <ThemedText style={styles.locationText}>New York, NY 10001</ThemedText>
-                <ThemedText style={styles.locationHours}>Office Hours: Mon-Fri, 9AM-5PM</ThemedText>
+              <View style={styles.pricingContent}>
+                <View style={styles.pricingHeader}>
+                  <ThemedText style={styles.pricingAmount}>${specialist.price}</ThemedText>
+                  <ThemedText style={styles.pricingUnit}>per session</ThemedText>
+                </View>
+                <ThemedText style={styles.pricingDescription}>
+                  Standard consultation includes full examination, diagnosis, and treatment plan.
+                </ThemedText>
+                <View style={styles.pricingFeatures}>
+                  <View style={styles.pricingFeature}>
+                    <ThemedText style={styles.pricingFeatureText}>✓ 45-minute consultation</ThemedText>
+                  </View>
+                  <View style={styles.pricingFeature}>
+                    <ThemedText style={styles.pricingFeatureText}>✓ Follow-up support via message</ThemedText>
+                  </View>
+                  <View style={styles.pricingFeature}>
+                    <ThemedText style={styles.pricingFeatureText}>✓ Prescription management</ThemedText>
+                  </View>
+                  <View style={styles.pricingFeature}>
+                    <ThemedText style={styles.pricingFeatureText}>✓ Medical records access</ThemedText>
+                  </View>
+                </View>
               </View>
             </View>
           )}
@@ -478,6 +510,11 @@ export default function SpecialistDetailScreen() {
                 {specialist.availability && specialist.availability.map((slot, index) => (
                   <ThemedText key={index} style={styles.availabilityText}>• {slot}</ThemedText>
                 ))}
+                <ThemedText style={styles.infoSectionTitle}>Office Location</ThemedText>
+                <ThemedText style={styles.locationText}>123 Medical Plaza</ThemedText>
+                <ThemedText style={styles.locationText}>Suite 456</ThemedText>
+                <ThemedText style={styles.locationText}>New York, NY 10001</ThemedText>
+                <ThemedText style={styles.locationHours}>Office Hours: Mon-Fri, 9AM-5PM</ThemedText>
               </View>
             </View>
           )}
@@ -662,99 +699,138 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    alignItems: 'center',
-    paddingVertical: 20,
+    paddingVertical: 0,
   },
   profileContainer: {
     width: '100%',
     maxWidth: 600,
+    alignSelf: 'center',
   },
   profileHeader: {
-    padding: 20,
+    flexDirection: 'row',
+    padding: 16,
     paddingTop: 20,
+    gap: 20,
   },
-  profilePicture: {
+  profilePictureContainer: {
+    marginBottom: 0,
+  },
+  profilePictureBorder: {
     width: 86,
     height: 86,
     borderRadius: 43,
+    padding: 3,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 18,
+  },
+  profilePictureInner: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   initialsText: {
     fontSize: 30,
     fontWeight: 'bold',
     color: '#fff',
   },
+  nameInfoContainer: {
+    flex: 1,
+  },
+  nameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  profileName: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  verifiedBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#0095f6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 6,
+  },
+  verifiedText: {
+    fontSize: 12,
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  profileSpecialty: {
+    fontSize: 13,
+    opacity: 0.6,
+    marginBottom: 12,
+  },
   statsRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 18,
-    paddingVertical: 8,
+    gap: 24,
+    marginBottom: 12,
   },
   statItem: {
     alignItems: 'center',
   },
   statNumber: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 2,
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 0,
   },
   statLabel: {
-    fontSize: 12,
-    opacity: 0.6,
-  },
-  profileInfo: {
-    marginBottom: 14,
-  },
-  profileName: {
-    fontSize: 15,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  profileSpecialty: {
     fontSize: 13,
     opacity: 0.6,
-    marginBottom: 8,
   },
   profileBio: {
     fontSize: 13,
     lineHeight: 18,
-  },
-  nextAvailableContainer: {
-    backgroundColor: 'rgba(0, 149, 246, 0.1)',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
     marginBottom: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 149, 246, 0.2)',
   },
-  nextAvailableLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    opacity: 0.6,
-    marginBottom: 4,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+  actionButtonsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
   },
-  nextAvailableTime: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#0095f6',
-  },
-  bookButton: {
+  followButton: {
+    flex: 1,
     backgroundColor: '#0095f6',
-    paddingVertical: 7,
+    paddingVertical: 6,
     borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 0,
   },
-  bookButtonText: {
-    fontSize: 13,
+  followButtonText: {
+    fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  messageButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: 'rgba(128, 128, 128, 0.3)',
+    paddingVertical: 6,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  messageButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  addButton: {
+    width: 36,
+    borderWidth: 1,
+    borderColor: 'rgba(128, 128, 128, 0.3)',
+    paddingVertical: 6,
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addButtonText: {
+    fontSize: 20,
+    fontWeight: '300',
   },
   tabsContainer: {
     flexDirection: 'row',
@@ -784,15 +860,14 @@ const styles = StyleSheet.create({
   tabContent: {
     minHeight: 200,
   },
-  grid: {
+  contentGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 2,
   },
   gridItem: {
-    width: '32.8%',
+    width: '33.1%',
     aspectRatio: 1,
-    backgroundColor: 'rgba(128, 128, 128, 0.1)',
   },
   locationContent: {
     padding: 20,
@@ -812,25 +887,60 @@ const styles = StyleSheet.create({
     marginTop: 12,
     opacity: 0.6,
   },
+  pricingContent: {
+    padding: 16,
+  },
+  pricingHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginBottom: 16,
+  },
+  pricingAmount: {
+    fontSize: 48,
+    fontWeight: 'bold',
+  },
+  pricingUnit: {
+    fontSize: 16,
+    opacity: 0.6,
+    marginLeft: 6,
+  },
+  pricingDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 20,
+    opacity: 0.7,
+  },
+  pricingFeatures: {
+    gap: 10,
+  },
+  pricingFeature: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  pricingFeatureText: {
+    fontSize: 14,
+    opacity: 0.7,
+  },
   infoContent: {
-    padding: 20,
+    padding: 16,
   },
   infoSectionTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-    marginBottom: 10,
-    marginTop: 8,
+    marginBottom: 8,
+    marginTop: 0,
+    opacity: 0.8,
   },
   languagesRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
+    gap: 6,
+    marginBottom: 20,
   },
   languageTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
     borderWidth: 1,
     borderColor: 'rgba(128, 128, 128, 0.2)',
   },
@@ -839,30 +949,30 @@ const styles = StyleSheet.create({
   },
   availabilityText: {
     fontSize: 13,
-    marginBottom: 6,
-    opacity: 0.8,
+    marginBottom: 4,
+    opacity: 0.7,
   },
   ratingContent: {
-    padding: 20,
+    padding: 16,
   },
   ratingHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: 20,
     marginBottom: 20,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(128, 128, 128, 0.1)',
   },
   ratingNumber: {
-    fontSize: 48,
+    fontSize: 52,
     fontWeight: 'bold',
   },
   ratingStars: {
     flex: 1,
   },
   starsText: {
-    fontSize: 18,
+    fontSize: 20,
     marginBottom: 4,
   },
   reviewCount: {
@@ -878,12 +988,13 @@ const styles = StyleSheet.create({
   reviewAuthor: {
     fontSize: 14,
     fontWeight: '600',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   reviewText: {
     fontSize: 13,
-    lineHeight: 18,
-    marginBottom: 6,
+    lineHeight: 20,
+    marginBottom: 8,
+    opacity: 0.8,
   },
   reviewDate: {
     fontSize: 11,

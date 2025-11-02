@@ -1,13 +1,18 @@
+import type { Schema } from '@/amplify/data/resource';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { handleSignOut } from '@/lib/auth';
+import { createConversation, getUserConversations } from '@/lib/messaging';
 import Octicons from '@expo/vector-icons/Octicons';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { PlatformPressable } from '@react-navigation/elements';
+import { generateClient } from 'aws-amplify/data';
 import * as Haptics from 'expo-haptics';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+
+const client = generateClient<Schema>();
 
 // Helper function to capitalize the first letter of a string
 const capitalizeFirst = (str: string): string => {
@@ -38,24 +43,17 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   const [searchQuery, setSearchQuery] = useState('');
   const [messagesQuery, setMessagesQuery] = useState('');
   const [showLogoutMenu, setShowLogoutMenu] = useState(false);
-  const [conversations, setConversations] = useState<Array<{ id: string; title: string }>>([
-    { id: 'c1', title: 'Dr. Jones' },
-    { id: 'c2', title: 'Care Team' },
-  ]);
+  const [conversations, setConversations] = useState<Array<{ id: string; title: string }>>([]);
+  const [isLoadingConversations, setIsLoadingConversations] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [showNewConversationModal, setShowNewConversationModal] = useState(false);
   const [newConvQuery, setNewConvQuery] = useState('');
   const [hoveredTab, setHoveredTab] = useState<string | null>(null);
   const slideAnim = useRef(new Animated.Value(0)).current;
-  const specialists = useMemo(
-    () => [
-      { id: 's1', name: 'Dr. Emily Jones, MD' },
-      { id: 's2', name: 'Dr. Aaron Patel, DO' },
-      { id: 's3', name: 'NP Sarah Kim' },
-      { id: 's4', name: 'Care Team' },
-    ],
-    []
-  );
+  const [searchResults, setSearchResults] = useState<Array<{ id: string; name: string }>>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Refresh auth state when route changes (e.g., after login/verification)
   useEffect(() => {
@@ -261,6 +259,52 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
     }
   };
 
+  /**
+   * Load conversations from DynamoDB when messages panel is expanded
+   * 
+   * This effect loads the user's conversations from DynamoDB when they open the messages panel.
+   * It runs when the messages panel becomes visible (isMessagesExpanded).
+   */
+  useEffect(() => {
+    const loadConversations = async () => {
+      if (!isMessagesExpanded || !isAuthenticated) {
+        return;
+      }
+
+      try {
+        setIsLoadingConversations(true);
+        console.log('[CONVERSATIONS] Loading conversations from DynamoDB');
+
+        // Load conversations from DynamoDB using the messaging service
+        const userConversations = await getUserConversations();
+
+        // Update local conversations list
+        setConversations(
+          userConversations.map(conv => ({
+            id: conv.id,
+            title: conv.name,
+          }))
+        );
+
+        console.log(`[CONVERSATIONS] Loaded ${userConversations.length} conversations`);
+      } catch (error) {
+        console.error('[CONVERSATIONS] Error loading conversations:', error);
+        // Don't show alert - just log the error
+        // Conversations list will remain empty
+      } finally {
+        setIsLoadingConversations(false);
+      }
+    };
+
+    loadConversations();
+  }, [isMessagesExpanded, isAuthenticated]);
+
+  /**
+   * Auto-select first conversation when messages panel opens
+   * 
+   * This effect automatically selects and navigates to the first conversation
+   * when the messages panel is focused and there are conversations available.
+   */
   useEffect(() => {
     if (isMessagesFocused && !selectedConversationId && conversations.length > 0) {
       const firstId = conversations[0].id;
@@ -271,11 +315,89 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
 
   const handleCreateConversation = () => {
     setNewConvQuery('');
+    setSearchResults([]);
     setShowNewConversationModal(true);
   };
 
-  const handleSelectSpecialistForNew = (specialistName: string) => {
-    // Reuse existing conversation by title if present
+  // Debounced search for doctors/specialists
+  useEffect(() => {
+    // Clear any existing timeout
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    // If query is empty, clear results
+    if (!newConvQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    // Set loading state
+    setIsSearching(true);
+
+    // Debounce the search query
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const query = newConvQuery.trim().toLowerCase();
+        
+        // Fetch all specialists from the database
+        const allSpecialists = await client.models.Specialist.list();
+        
+        // Filter specialists by name (first_name or last_name contains the query)
+        // Only show active specialists
+        const filtered = allSpecialists.data
+          .filter(specialist => {
+            const firstName = specialist.first_name?.toLowerCase() || '';
+            const lastName = specialist.last_name?.toLowerCase() || '';
+            const fullName = `${firstName} ${lastName}`.trim();
+            
+            // Check if query matches first name, last name, or full name
+            return (
+              (specialist.status === 'active' || specialist.status === 'pending') &&
+              (firstName.includes(query) || 
+               lastName.includes(query) || 
+               fullName.includes(query))
+            );
+          })
+          .map(specialist => ({
+            id: specialist.id,
+            name: `Dr. ${specialist.first_name} ${specialist.last_name}`,
+          }))
+          .slice(0, 20); // Limit to 20 results for performance
+
+        setSearchResults(filtered);
+      } catch (error) {
+        console.error('Error searching specialists:', error);
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300); // 300ms debounce delay
+
+    // Cleanup function
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [newConvQuery]);
+
+  /**
+   * Handle selecting a specialist to start a new conversation
+   * 
+   * This function:
+   * 1. Checks if a conversation already exists with this specialist
+   * 2. Fetches the specialist's user_id from DynamoDB
+   * 3. Creates a new conversation in DynamoDB via Chime SDK Messaging
+   * 4. Navigates to the newly created conversation
+   * 
+   * @param specialistId - Specialist ID from DynamoDB
+   * @param specialistName - Display name of the specialist
+   */
+  const handleSelectSpecialistForNew = async (specialistId: string, specialistName: string) => {
+    // Check if conversation already exists by searching in DynamoDB
+    // For now, we'll check local conversations first, then create if not found
     const existing = conversations.find(c => c.title === specialistName);
     if (existing) {
       setSelectedConversationId(existing.id);
@@ -283,13 +405,113 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
       navigateToMessages({ conversationId: existing.id });
       return;
     }
-    const newId = `c_${Date.now()}`;
-    const newConv = { id: newId, title: specialistName };
-    const next = [newConv, ...conversations];
-    setConversations(next);
-    setSelectedConversationId(newId);
-    setShowNewConversationModal(false);
-    navigateToMessages({ conversationId: newId });
+
+    try {
+      setIsCreatingConversation(true);
+
+      // Get current user ID
+      const currentUserId = user?.userId || user?.username;
+      if (!currentUserId) {
+        Alert.alert('Error', 'You must be logged in to start a conversation.');
+        setIsCreatingConversation(false);
+        return;
+      }
+
+      // Fetch specialist from DynamoDB to get their user_id (Cognito user ID)
+      console.log('[CONVERSATION] Fetching specialist:', specialistId);
+      const { data: specialist, errors: specialistErrors } = await client.models.Specialist.get({
+        id: specialistId,
+      });
+
+      if (specialistErrors || !specialist) {
+        throw new Error('Specialist not found');
+      }
+
+      if (!specialist.user_id) {
+        throw new Error('Specialist user ID not available');
+      }
+
+      const specialistUserId = specialist.user_id;
+
+      // Check if conversation already exists in DynamoDB
+      // Use getUserConversations to get all conversations for current user
+      // Then filter for conversations with this specialist
+      const allConversations = await getUserConversations();
+
+      // Check if conversation with this specialist already exists
+      // For direct conversations, both participants must be present
+      const existingConversation = allConversations.find(conv => 
+        conv.type === 'direct' &&
+        conv.participantIds.includes(currentUserId) && 
+        conv.participantIds.includes(specialistUserId)
+      );
+
+      if (existingConversation) {
+        console.log('[CONVERSATION] Existing conversation found:', existingConversation.id);
+        setSelectedConversationId(existingConversation.id);
+        setShowNewConversationModal(false);
+        navigateToMessages({ conversationId: existingConversation.id });
+        setIsCreatingConversation(false);
+        return;
+      }
+
+      // Create new conversation in DynamoDB via Chime SDK Messaging
+      console.log('[CONVERSATION] Creating new conversation with:', {
+        currentUserId,
+        specialistUserId,
+        specialistName,
+      });
+
+      // Close modal first
+      setShowNewConversationModal(false);
+
+      // Create the conversation - this creates both the Chime SDK channel and DynamoDB record
+      console.log('[CONVERSATION] Starting conversation creation...');
+      
+      const newConversation = await createConversation(
+        [currentUserId, specialistUserId], // Participant IDs
+        specialistName, // Conversation name
+        'direct' // Type: direct message
+      );
+
+      // Verify conversation was created with valid ID
+      if (!newConversation || !newConversation.id) {
+        throw new Error('Conversation creation failed: No conversation ID returned');
+      }
+
+      console.log('[CONVERSATION] Conversation created successfully:', {
+        id: newConversation.id,
+        channelArn: newConversation.channelArn,
+        name: newConversation.name,
+      });
+
+      // Update local conversations list immediately so it appears in the sidebar
+      const newConv = { id: newConversation.id, title: specialistName };
+      setConversations(prev => {
+        // Check if already exists to avoid duplicates
+        const exists = prev.find(c => c.id === newConversation.id);
+        if (exists) return prev;
+        // Add to beginning of list (most recent first)
+        return [newConv, ...prev];
+      });
+      
+      // Set as selected conversation
+      setSelectedConversationId(newConversation.id);
+      
+      // Navigate immediately to open the messaging room
+      // The messages screen will load the conversation details and be ready to send messages
+      console.log('[CONVERSATION] Navigating to conversation:', newConversation.id);
+      navigateToMessages({ conversationId: newConversation.id });
+      
+      setIsCreatingConversation(false);
+    } catch (error) {
+      console.error('[CONVERSATION] Error creating conversation:', error);
+      Alert.alert(
+        'Error',
+        error instanceof Error ? error.message : 'Failed to create conversation. Please try again.'
+      );
+      setIsCreatingConversation(false);
+    }
   };
 
   const handleSelectConversation = (id: string) => {
@@ -641,25 +863,34 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
             autoFocus={false}
           />
           <ScrollView style={styles.searchResults}>
-            {(messagesQuery.trim() 
+            {isLoadingConversations ? (
+              <View style={styles.emptyConversations}>
+                <ActivityIndicator size="small" color="#111827" />
+                <Text style={styles.emptyConversationsText}>Loading conversations...</Text>
+              </View>
+            ) : (messagesQuery.trim() 
               ? conversations.filter(conv => conv.title.toLowerCase().includes(messagesQuery.toLowerCase()))
               : conversations
-            ).map(conv => {
-              const isSelected = conv.id === selectedConversationId;
-              return (
-                <TouchableOpacity
-                  key={conv.id}
-                  onPress={() => handleSelectConversation(conv.id)}
-                  style={[styles.conversationItem, isSelected && styles.activeConversationItem]}
-                  accessibilityRole="button"
-                >
-                  <Text style={[styles.conversationTitle, isSelected && styles.activeConversationTitle]} numberOfLines={1}>
-                    {conv.title}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-            {conversations.length === 0 && (
+            ).length > 0 ? (
+              (messagesQuery.trim() 
+                ? conversations.filter(conv => conv.title.toLowerCase().includes(messagesQuery.toLowerCase()))
+                : conversations
+              ).map(conv => {
+                const isSelected = conv.id === selectedConversationId;
+                return (
+                  <TouchableOpacity
+                    key={conv.id}
+                    onPress={() => handleSelectConversation(conv.id)}
+                    style={[styles.conversationItem, isSelected && styles.activeConversationItem]}
+                    accessibilityRole="button"
+                  >
+                    <Text style={[styles.conversationTitle, isSelected && styles.activeConversationTitle]} numberOfLines={1}>
+                      {conv.title}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })
+            ) : (
               <View style={styles.emptyConversations}>
                 <Text style={styles.emptyConversationsText}>No conversations yet</Text>
                 <TouchableOpacity onPress={handleCreateConversation}>
@@ -672,17 +903,25 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
       )}
     </Animated.View>
 
-    {/* Logout Menu Modal */}
+    {/* New Conversation Modal */}
       <Modal
         visible={showNewConversationModal}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setShowNewConversationModal(false)}
+        onRequestClose={() => {
+          setShowNewConversationModal(false);
+          setNewConvQuery('');
+          setSearchResults([]);
+        }}
       >
         <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
-          onPress={() => setShowNewConversationModal(false)}
+          onPress={() => {
+            setShowNewConversationModal(false);
+            setNewConvQuery('');
+            setSearchResults([]);
+          }}
         >
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()}>
             <View style={styles.newConvContainer}>
@@ -696,24 +935,44 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                 autoFocus
               />
               <ScrollView style={styles.newConvResults} keyboardShouldPersistTaps="handled">
-                {specialists
-                  .filter(s => s.name.toLowerCase().includes(newConvQuery.toLowerCase()))
-                  .map(s => (
+                {isSearching ? (
+                  <View style={styles.newConvEmpty}>
+                    <ActivityIndicator size="small" color="#111827" />
+                    <Text style={styles.newConvEmptyText}>Searching...</Text>
+                  </View>
+                ) : searchResults.length > 0 ? (
+                  searchResults.map(s => (
                     <TouchableOpacity
                       key={s.id}
-                      onPress={() => handleSelectSpecialistForNew(s.name)}
-                      style={styles.newConvResultItem}
+                      onPress={() => handleSelectSpecialistForNew(s.id, s.name)}
+                      style={[styles.newConvResultItem, isCreatingConversation && styles.newConvResultItemDisabled]}
+                      disabled={isCreatingConversation}
                     >
-                      <Text style={styles.newConvResultText}>{s.name}</Text>
+                      {isCreatingConversation ? (
+                        <View style={styles.newConvResultLoading}>
+                          <ActivityIndicator size="small" color="#111827" />
+                          <Text style={styles.newConvResultText}>Creating...</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.newConvResultText}>{s.name}</Text>
+                      )}
                     </TouchableOpacity>
-                  ))}
-                {specialists.filter(s => s.name.toLowerCase().includes(newConvQuery.toLowerCase())).length === 0 && (
+                  ))
+                ) : newConvQuery.trim() ? (
                   <View style={styles.newConvEmpty}>
-                    <Text style={styles.newConvEmptyText}>No matches</Text>
+                    <Text style={styles.newConvEmptyText}>No doctors found</Text>
+                  </View>
+                ) : (
+                  <View style={styles.newConvEmpty}>
+                    <Text style={styles.newConvEmptyText}>Start typing to search for doctors</Text>
                   </View>
                 )}
               </ScrollView>
-              <TouchableOpacity style={styles.newConvCancel} onPress={() => setShowNewConversationModal(false)}>
+              <TouchableOpacity style={styles.newConvCancel} onPress={() => {
+                setShowNewConversationModal(false);
+                setNewConvQuery('');
+                setSearchResults([]);
+              }}>
                 <Text style={styles.newConvCancelText}>Cancel</Text>
               </TouchableOpacity>
             </View>
@@ -1147,6 +1406,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',
+  },
+  newConvResultItemDisabled: {
+    opacity: 0.6,
+  },
+  newConvResultLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   newConvResultText: {
     fontSize: 14,
