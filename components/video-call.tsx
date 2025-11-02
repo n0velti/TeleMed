@@ -1077,15 +1077,37 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
 
         // Handle REMOTE video tile
         if (tileState.attendeeId && tileState.attendeeId !== currentUserIdRef.current) {
+          console.log('[VIDEO_CALL] 📹 Remote tile detected:', {
+            attendeeId: tileState.attendeeId,
+            active: tileState.active,
+            tileId: tileState.tileId,
+            hasElement: !!remoteVideoElementRef.current,
+          });
+          
+          // Always update attendee count when remote tile appears
+          updateAttendeeCount(audioVideo);
+          
+          // Bind if tile is active and element exists
           if (remoteVideoElementRef.current && tileState.active) {
             console.log('[VIDEO_CALL] 🔗 Binding remote video:', tileState.attendeeId);
             try {
+              // Unbind any existing video first
+              if (tileState.boundVideoElement && tileState.boundVideoElement !== remoteVideoElementRef.current) {
+                try {
+                  audioVideo.unbindVideoElement(tileState.tileId);
+                } catch (unbindError) {
+                  // Ignore unbind errors
+                }
+              }
+              
               audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
               setHasRemoteVideo(true);
-              updateAttendeeCount(audioVideo);
+              console.log('[VIDEO_CALL] ✓✓✓ Remote video BOUND successfully!');
             } catch (error) {
               console.error('[VIDEO_CALL] Remote bind error:', error);
             }
+          } else if (!tileState.active) {
+            console.log('[VIDEO_CALL] ⏳ Remote tile not active yet (waiting...)');
           }
         }
       },
@@ -1124,7 +1146,21 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
           }
         }
         
+        // Update attendee count and check if we lost remote video
         updateAttendeeCount(audioVideo);
+        
+        // If it was a remote tile, update hasRemoteVideo
+        try {
+          const allTiles = audioVideo.getAllVideoTiles();
+          const hasRemote = Array.from(allTiles.values()).some((tile: any) => {
+            return tile.attendeeId && 
+                   tile.attendeeId !== currentUserIdRef.current && 
+                   tile.active;
+          });
+          setHasRemoteVideo(hasRemote);
+        } catch (error) {
+          // Ignore
+        }
       },
 
       // Called when audio/video stops
@@ -1133,10 +1169,36 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         setCallState('disconnected');
         onCallEnd?.();
       },
+      
+      // Called when remote video sources change (attendance changes)
+      videoStreamsDidChange: (videoStreams: any) => {
+        console.log('[VIDEO_CALL] 📹 Video streams changed:', videoStreams);
+        updateAttendeeCount(audioVideo);
+        
+        // Check for new remote streams and bind them
+        if (videoStreams && Array.isArray(videoStreams)) {
+          for (const stream of videoStreams) {
+            if (stream.attendeeId && stream.attendeeId !== currentUserIdRef.current) {
+              console.log('[VIDEO_CALL] New remote stream detected:', stream.attendeeId);
+              // The videoTileDidUpdate will handle binding
+              updateAttendeeCount(audioVideo);
+            }
+          }
+        }
+      },
+      
+      // Called when remote attendees join/leave
+      remoteVideoSourcesDidChange: (videoSources: any) => {
+        console.log('[VIDEO_CALL] 👥 Remote video sources changed:', videoSources);
+        updateAttendeeCount(audioVideo);
+      },
     };
 
     audioVideo.addObserver(observer);
     console.log('[VIDEO_CALL] ✓ Observers added');
+    
+    // Initial attendee count update
+    updateAttendeeCount(audioVideo);
   };
 
   /**
@@ -1144,26 +1206,46 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
    */
   const updateAttendeeCount = (audioVideo: any) => {
     try {
+      // Get all attendees (not just video tiles, in case they don't have video)
+      const allAttendees = audioVideo.getAllRemoteVideoSources?.() || [];
       const allTiles = audioVideo.getAllVideoTiles();
-      let remoteCount = 0;
       
+      // Count unique remote attendees from tiles
+      const remoteAttendeeIds = new Set<string>();
       for (const tile of Array.from(allTiles.values())) {
         const tileState = tile as any;
         if (tileState.attendeeId && 
-            tileState.attendeeId !== currentUserIdRef.current && 
-            tileState.active) {
-          remoteCount++;
+            tileState.attendeeId !== currentUserIdRef.current) {
+          remoteAttendeeIds.add(tileState.attendeeId);
         }
       }
       
-      // Always count yourself (1) + remote attendees
-      const total = 1 + remoteCount;
+      // Also check remote video sources
+      for (const source of allAttendees) {
+        if (source.attendeeId && source.attendeeId !== currentUserIdRef.current) {
+          remoteAttendeeIds.add(source.attendeeId);
+        }
+      }
+      
+      const remoteCount = remoteAttendeeIds.size;
+      const total = 1 + remoteCount; // Yourself + remote attendees
+      
       setAttendeeCount(total);
+      
+      // Also update hasRemoteVideo based on active remote tiles
+      const hasActiveRemoteTile = Array.from(allTiles.values()).some((tile: any) => {
+        return tile.attendeeId && 
+               tile.attendeeId !== currentUserIdRef.current && 
+               tile.active;
+      });
+      setHasRemoteVideo(hasActiveRemoteTile);
+      
       console.log('[VIDEO_CALL] 👥 Attendee count updated:', { 
         total, 
         remote: remoteCount,
         yourself: 1,
-        waiting: total < 2
+        waiting: total < 2,
+        remoteAttendeeIds: Array.from(remoteAttendeeIds),
       });
     } catch (error) {
       console.error('[VIDEO_CALL] Error updating attendee count:', error);
@@ -1361,13 +1443,13 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
     // - Less than 2 attendees (only 1 person = yourself)
     // - OR no remote video yet
     const isWaitingForOthers = attendeeCount < 2 || !hasRemoteVideo;
-    const waitingCount = Math.max(0, 2 - attendeeCount);
+    const otherParticipantsNeeded = Math.max(0, 2 - attendeeCount); // How many OTHER people needed
     
     console.log('[VIDEO_CALL] 👥 Render state:', {
       attendeeCount,
       hasRemoteVideo,
       isWaitingForOthers,
-      waitingCount,
+      otherParticipantsNeeded,
       callState
     });
 
@@ -1394,7 +1476,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
                     {requestingPermissions 
                       ? 'Requesting camera and microphone access...'
                       : attendeeCount < 2
-                        ? `Waiting for ${waitingCount} other participant${waitingCount !== 1 ? 's' : ''} to join...`
+                        ? `Waiting for ${otherParticipantsNeeded} other participant${otherParticipantsNeeded !== 1 ? 's' : ''} to join...`
                         : 'Connecting...'}
                   </ThemedText>
                 </View>
