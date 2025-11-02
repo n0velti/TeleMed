@@ -999,6 +999,43 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         
         setCallState('connected');
         console.log('[VIDEO_CALL] ====== INITIALIZATION COMPLETE ======');
+        
+        // Set up periodic check for remote attendees (in case observers miss them)
+        const attendeeCheckInterval = setInterval(() => {
+          if (!isMountedRef.current || !meetingSessionRef.current) {
+            clearInterval(attendeeCheckInterval);
+            return;
+          }
+          
+          try {
+            const audioVideo = meetingSessionRef.current.audioVideo;
+            updateAttendeeCount(audioVideo);
+            
+            // Also try to bind any unbound remote video tiles
+            const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
+            for (const tile of Array.from(allTiles.values())) {
+              const tileState = tile as any;
+              if (tileState.attendeeId && 
+                  tileState.attendeeId !== currentUserIdRef.current && 
+                  tileState.active && 
+                  remoteVideoElementRef.current &&
+                  tileState.boundVideoElement !== remoteVideoElementRef.current) {
+                console.log('[VIDEO_CALL] 🔄 Periodic check: binding remote video:', tileState.attendeeId);
+                try {
+                  audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
+                  setHasRemoteVideo(true);
+                } catch (error) {
+                  console.error('[VIDEO_CALL] Periodic bind error:', error);
+                }
+              }
+            }
+          } catch (error) {
+            // Ignore errors in periodic check
+          }
+        }, 2000); // Check every 2 seconds
+        
+        // Store interval for cleanup
+        (meetingSessionRef.current as any)._attendeeCheckInterval = attendeeCheckInterval;
 
       } catch (error: any) {
         console.error('[VIDEO_CALL] ✗✗✗ INITIALIZATION FAILED ✗✗✗', error);
@@ -1017,10 +1054,47 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       isMountedRef.current = false;
       
       if (meetingSessionRef.current) {
+        const audioVideo = meetingSessionRef.current.audioVideo;
+        const sessionAny = meetingSessionRef.current as any;
+        
         try {
           console.log('[VIDEO_CALL] Cleaning up meeting session...');
-          meetingSessionRef.current.audioVideo?.stop();
-          meetingSessionRef.current.audioVideo?.leave();
+          
+          // Clear intervals
+          if (sessionAny._attendeeCheckInterval) {
+            clearInterval(sessionAny._attendeeCheckInterval);
+          }
+          if (sessionAny._bindInterval) {
+            clearInterval(sessionAny._bindInterval);
+          }
+          
+          // Stop video tile
+          try {
+            audioVideo?.stopLocalVideoTile();
+            if (localVideoElementRef.current) {
+              const localTile = audioVideo?.getLocalVideoTile();
+              if (localTile) {
+                audioVideo?.unbindVideoElement(localTile.state().tileId);
+              }
+              const videoElement = localVideoElementRef.current as HTMLVideoElement;
+              if (videoElement?.srcObject) {
+                const stream = videoElement.srcObject as MediaStream;
+                stream.getTracks().forEach(track => {
+                  track.stop();
+                  console.log('[VIDEO_CALL] Stopped track:', track.kind);
+                });
+                videoElement.srcObject = null;
+              }
+            }
+          } catch (e) {
+            // Ignore video cleanup errors
+          }
+          
+          // Stop and leave
+          audioVideo?.stop();
+          audioVideo?.leave();
+          
+          console.log('[VIDEO_CALL] ✓ Cleanup complete');
         } catch (error) {
           console.error('[VIDEO_CALL] Cleanup error:', error);
         }
@@ -1082,32 +1156,42 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
             active: tileState.active,
             tileId: tileState.tileId,
             hasElement: !!remoteVideoElementRef.current,
+            bound: !!tileState.boundVideoElement,
           });
           
-          // Always update attendee count when remote tile appears
+          // CRITICAL: Always update attendee count when remote tile appears (even if not active)
           updateAttendeeCount(audioVideo);
           
           // Bind if tile is active and element exists
-          if (remoteVideoElementRef.current && tileState.active) {
-            console.log('[VIDEO_CALL] 🔗 Binding remote video:', tileState.attendeeId);
-            try {
-              // Unbind any existing video first
-              if (tileState.boundVideoElement && tileState.boundVideoElement !== remoteVideoElementRef.current) {
-                try {
-                  audioVideo.unbindVideoElement(tileState.tileId);
-                } catch (unbindError) {
-                  // Ignore unbind errors
+          if (remoteVideoElementRef.current) {
+            if (tileState.active) {
+              console.log('[VIDEO_CALL] 🔗 Binding remote video:', tileState.attendeeId);
+              try {
+                // Unbind any existing video first
+                if (tileState.boundVideoElement && tileState.boundVideoElement !== remoteVideoElementRef.current) {
+                  try {
+                    audioVideo.unbindVideoElement(tileState.tileId);
+                  } catch (unbindError) {
+                    // Ignore unbind errors
+                  }
                 }
+                
+                if (tileState.boundVideoElement !== remoteVideoElementRef.current) {
+                  audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
+                  setHasRemoteVideo(true);
+                  console.log('[VIDEO_CALL] ✓✓✓ Remote video BOUND successfully!');
+                } else {
+                  console.log('[VIDEO_CALL] ✓ Remote video already bound');
+                  setHasRemoteVideo(true);
+                }
+              } catch (error) {
+                console.error('[VIDEO_CALL] Remote bind error:', error);
               }
-              
-              audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
-              setHasRemoteVideo(true);
-              console.log('[VIDEO_CALL] ✓✓✓ Remote video BOUND successfully!');
-            } catch (error) {
-              console.error('[VIDEO_CALL] Remote bind error:', error);
+            } else {
+              console.log('[VIDEO_CALL] ⏳ Remote tile not active yet (will bind when active)');
             }
-          } else if (!tileState.active) {
-            console.log('[VIDEO_CALL] ⏳ Remote tile not active yet (waiting...)');
+          } else {
+            console.log('[VIDEO_CALL] ⏳ Remote video element not ready yet');
           }
         }
       },
@@ -1192,6 +1276,33 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         console.log('[VIDEO_CALL] 👥 Remote video sources changed:', videoSources);
         updateAttendeeCount(audioVideo);
       },
+      
+      // CRITICAL: Called when attendees join/leave (presence events)
+      // This detects attendees even if they don't have video
+      attendeeDidPresenceChange: (presence: any, attendeeId: string) => {
+        console.log('[VIDEO_CALL] 👥 Attendee presence changed:', {
+          attendeeId,
+          present: presence.present,
+          signalStrength: presence.signalStrength,
+        });
+        updateAttendeeCount(audioVideo);
+      },
+      
+      // Alternative: Called when remote attendee presence is received
+      attendeePresenceDidChange: (presence: any, attendeeId: string) => {
+        console.log('[VIDEO_CALL] 👥 Attendee presence received:', {
+          attendeeId,
+          present: presence.present,
+        });
+        
+        if (presence.present && attendeeId !== currentUserIdRef.current) {
+          console.log('[VIDEO_CALL] ✓✓✓ REMOTE ATTENDEE JOINED:', attendeeId);
+          updateAttendeeCount(audioVideo);
+        } else if (!presence.present && attendeeId !== currentUserIdRef.current) {
+          console.log('[VIDEO_CALL] Remote attendee left:', attendeeId);
+          updateAttendeeCount(audioVideo);
+        }
+      },
     };
 
     audioVideo.addObserver(observer);
@@ -1199,6 +1310,21 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
     
     // Initial attendee count update
     updateAttendeeCount(audioVideo);
+    
+    // Also try to get initial remote attendees from realtime controller
+    try {
+      const realtimeController = (meetingSession as any).audioVideo?.realtimeController;
+      if (realtimeController) {
+        // Some SDK versions expose attendees here
+        const remoteAttendees = realtimeController.getAllRemoteAttendeeIds?.() || [];
+        console.log('[VIDEO_CALL] Initial remote attendees from realtime:', remoteAttendees);
+        if (remoteAttendees.length > 0) {
+          updateAttendeeCount(audioVideo);
+        }
+      }
+    } catch (e) {
+      // Ignore if not available
+    }
   };
 
   /**
@@ -1206,25 +1332,39 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
    */
   const updateAttendeeCount = (audioVideo: any) => {
     try {
-      // Get all attendees (not just video tiles, in case they don't have video)
-      const allAttendees = audioVideo.getAllRemoteVideoSources?.() || [];
-      const allTiles = audioVideo.getAllVideoTiles();
-      
-      // Count unique remote attendees from tiles
       const remoteAttendeeIds = new Set<string>();
+      
+      // Method 1: Check video tiles (for attendees with video)
+      const allTiles = audioVideo.getAllVideoTiles?.() || audioVideo.getAllVideoTiles?.() || new Map();
       for (const tile of Array.from(allTiles.values())) {
         const tileState = tile as any;
-        if (tileState.attendeeId && 
+        if (tileState?.attendeeId && 
             tileState.attendeeId !== currentUserIdRef.current) {
           remoteAttendeeIds.add(tileState.attendeeId);
         }
       }
       
-      // Also check remote video sources
+      // Method 2: Check remote video sources
+      const allAttendees = audioVideo.getAllRemoteVideoSources?.() || [];
       for (const source of allAttendees) {
-        if (source.attendeeId && source.attendeeId !== currentUserIdRef.current) {
+        if (source?.attendeeId && source.attendeeId !== currentUserIdRef.current) {
           remoteAttendeeIds.add(source.attendeeId);
         }
+      }
+      
+      // Method 3: Check realtime controller for all attendees (including those without video)
+      try {
+        const realtimeController = audioVideo.realtimeController || (audioVideo as any).realtimeController;
+        if (realtimeController) {
+          const allRemoteIds = realtimeController.getAllRemoteAttendeeIds?.() || [];
+          for (const attendeeId of allRemoteIds) {
+            if (attendeeId && attendeeId !== currentUserIdRef.current) {
+              remoteAttendeeIds.add(attendeeId);
+            }
+          }
+        }
+      } catch (e) {
+        // Realtime controller might not be available
       }
       
       const remoteCount = remoteAttendeeIds.size;
@@ -1232,9 +1372,9 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       
       setAttendeeCount(total);
       
-      // Also update hasRemoteVideo based on active remote tiles
+      // Update hasRemoteVideo based on active remote tiles
       const hasActiveRemoteTile = Array.from(allTiles.values()).some((tile: any) => {
-        return tile.attendeeId && 
+        return tile?.attendeeId && 
                tile.attendeeId !== currentUserIdRef.current && 
                tile.active;
       });
@@ -1246,7 +1386,13 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         yourself: 1,
         waiting: total < 2,
         remoteAttendeeIds: Array.from(remoteAttendeeIds),
+        hasActiveRemoteVideo: hasActiveRemoteTile,
       });
+      
+      // Log if someone joined but we're still showing waiting message
+      if (remoteCount > 0 && total >= 2 && !hasRemoteVideo) {
+        console.log('[VIDEO_CALL] ⚠️ Remote attendee joined but no video yet:', Array.from(remoteAttendeeIds));
+      }
     } catch (error) {
       console.error('[VIDEO_CALL] Error updating attendee count:', error);
     }
@@ -1400,19 +1546,91 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
   };
 
   /**
-   * End the call
+   * End the call - PROPERLY clean up everything
    */
-  const endCall = () => {
+  const endCall = async () => {
     console.log('[VIDEO_CALL] 📞 Ending call...');
+    
     if (meetingSessionRef.current) {
+      const audioVideo = meetingSessionRef.current.audioVideo;
+      const sessionAny = meetingSessionRef.current as any;
+      
+      // Clear all intervals first
+      if (sessionAny._attendeeCheckInterval) {
+        clearInterval(sessionAny._attendeeCheckInterval);
+        console.log('[VIDEO_CALL] Cleared attendee check interval');
+      }
+      if (sessionAny._bindInterval) {
+        clearInterval(sessionAny._bindInterval);
+        console.log('[VIDEO_CALL] Cleared bind interval');
+      }
+      
       try {
-        meetingSessionRef.current.audioVideo?.stop();
-        meetingSessionRef.current.audioVideo?.leave();
+        // Stop local video tile first
+        if (isVideoEnabled) {
+          console.log('[VIDEO_CALL] Stopping local video tile...');
+          try {
+            audioVideo?.stopLocalVideoTile();
+            
+            // Unbind video element
+            if (localVideoElementRef.current) {
+              const localTile = audioVideo?.getLocalVideoTile();
+              if (localTile) {
+                try {
+                  audioVideo?.unbindVideoElement(localTile.state().tileId);
+                } catch (e) {
+                  // Ignore
+                }
+              }
+              
+              // Stop all media tracks from the video element
+              const videoElement = localVideoElementRef.current as HTMLVideoElement;
+              if (videoElement && videoElement.srcObject) {
+                const stream = videoElement.srcObject as MediaStream;
+                stream.getTracks().forEach(track => {
+                  track.stop();
+                  console.log('[VIDEO_CALL] Stopped media track:', track.kind);
+                });
+                videoElement.srcObject = null;
+              }
+            }
+          } catch (videoError) {
+            console.error('[VIDEO_CALL] Error stopping video:', videoError);
+          }
+        }
+        
+        // Stop audio
+        try {
+          audioVideo?.realtimeMuteLocalAudio();
+        } catch (e) {
+          // Ignore
+        }
+        
+        // Stop and leave the meeting
+        console.log('[VIDEO_CALL] Stopping audio/video session...');
+        await audioVideo?.stop();
+        console.log('[VIDEO_CALL] Leaving meeting...');
+        await audioVideo?.leave();
+        console.log('[VIDEO_CALL] ✓ Meeting ended cleanly');
+        
       } catch (error) {
         console.error('[VIDEO_CALL] Error ending call:', error);
       }
     }
+    
+    // Clear refs
+    meetingSessionRef.current = null;
+    localVideoElementRef.current = null;
+    remoteVideoElementRef.current = null;
+    
+    // Update state
     setCallState('disconnected');
+    setIsVideoEnabled(false);
+    setIsAudioEnabled(false);
+    setAttendeeCount(0);
+    setHasRemoteVideo(false);
+    
+    // Call the callback
     onCallEnd?.();
   };
 
