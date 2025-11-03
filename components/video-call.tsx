@@ -1,4 +1,4 @@
-import { createMeetingSession, MeetingCredentials } from '@/lib/chime';
+import { createMeetingSession } from '@/lib/chime';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { Platform } from 'expo-modules-core';
 import React, { useEffect, useRef, useState } from 'react';
@@ -6,2204 +6,428 @@ import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import { ThemedText } from './themed-text';
 import { ThemedView } from './themed-view';
 
-/**
- * Video Call Component - Clean Rewrite
- * 
- * This component handles video calling using Amazon Chime SDK.
- * Focus: Get local video working reliably in a green box on bottom right.
- */
-
 interface VideoCallProps {
   appointmentId?: string;
   onCallEnd?: () => void;
-  userName?: string;
 }
 
-type CallState = 'initializing' | 'connecting' | 'connected' | 'disconnected' | 'error';
+interface RemoteAttendee {
+  attendeeId: string;
+  email: string;
+}
 
-export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps) {
-  // State management
-  const [callState, setCallState] = useState<CallState>('initializing');
+export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [attendeeCount, setAttendeeCount] = useState(0);
-  const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
-  const [requestingPermissions, setRequestingPermissions] = useState(false);
-  
-  // Refs for Chime SDK and DOM elements
+  const [isConnecting, setIsConnecting] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [remoteAttendee, setRemoteAttendee] = useState<RemoteAttendee | null>(null);
+  const [attendeeEmails, setAttendeeEmails] = useState<Map<string, string>>(new Map());
+  const [attendeeCount, setAttendeeCount] = useState(1); // Start with 1 (yourself)
+  const [expectedAttendees, setExpectedAttendees] = useState(2); // For appointments, usually 2 people
+
   const meetingSessionRef = useRef<any>(null);
-  const deviceControllerRef = useRef<any>(null);
-  const localVideoElementRef = useRef<HTMLVideoElement | null>(null);
-  const remoteVideoElementRef = useRef<HTMLVideoElement | null>(null);
-  const currentUserIdRef = useRef<string | null>(null);
-  const isMountedRef = useRef(true);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const currentAttendeeIdRef = useRef<string | null>(null);
 
-  /**
-   * Initialize the meeting - STEP 1: Get credentials and set up Chime SDK
-   */
   useEffect(() => {
-    console.log('[VIDEO_CALL] ====== INITIALIZING MEETING ======');
-    console.log('[VIDEO_CALL] Appointment ID:', appointmentId);
-    
-    let isMounted = true;
-    isMountedRef.current = true;
-
-    const initializeMeeting = async () => {
-      try {
-        // STEP 1.1: Request camera/microphone permissions (web only)
-        if (Platform.OS === 'web') {
-          console.log('[VIDEO_CALL] Step 1.1: Requesting permissions...');
-          setRequestingPermissions(true);
-          
-          try {
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-              throw new Error('Browser does not support camera/microphone access');
-            }
-            
-            // Request permissions with a test stream
-            const testStream = await navigator.mediaDevices.getUserMedia({
-              video: true,
-              audio: true,
-            });
-            
-            console.log('[VIDEO_CALL] ✓ Permissions granted');
-            
-            // Stop the test stream immediately
-            testStream.getTracks().forEach(track => {
-              track.stop();
-              console.log('[VIDEO_CALL] Stopped test track:', track.kind);
-            });
-            
-          } catch (permissionError: any) {
-            console.error('[VIDEO_CALL] ✗ Permission error:', permissionError);
-            if (permissionError.name === 'NotAllowedError' || permissionError.name === 'PermissionDeniedError') {
-              setCallState('error');
-              setErrorMessage('Camera and microphone access was denied. Please allow access and try again.');
+    if (Platform.OS !== 'web') {
+      setError('Video calling is only available on web');
               return;
-            }
-            throw permissionError;
-          } finally {
-            setRequestingPermissions(false);
-          }
-        }
+    }
 
-        // STEP 1.2: Create meeting session (get credentials)
-        console.log('[VIDEO_CALL] Step 1.2: Creating meeting session...');
-        setCallState('connecting');
+    const initialize = async () => {
+      try {
+        // Get credentials
+        const credentials = await createMeetingSession(appointmentId);
         
-        let credentials: MeetingCredentials;
-        try {
-          credentials = await createMeetingSession(appointmentId);
-          console.log('[VIDEO_CALL] ✓ Credentials received');
-        } catch (credentialsError: any) {
-          console.error('[VIDEO_CALL] ✗✗✗ Failed to get credentials:', credentialsError);
-          throw new Error(`Failed to create meeting session: ${credentialsError?.message || 'Unknown error'}`);
-        }
-        
-        // Log full credentials for debugging (but redact sensitive data)
-        console.log('[VIDEO_CALL] Credentials structure check:');
-        console.log('[VIDEO_CALL] - credentials exists:', !!credentials);
-        console.log('[VIDEO_CALL] - meetingInfo exists:', !!credentials?.meetingInfo);
-        console.log('[VIDEO_CALL] - attendeeInfo exists:', !!credentials?.attendeeInfo);
-        console.log('[VIDEO_CALL] - Full object:', JSON.stringify(credentials, null, 2));
-        
-        // Validate credentials structure with comprehensive null checks
+        // Validate credentials structure BEFORE using them
         if (!credentials) {
-          console.error('[VIDEO_CALL] ✗ Credentials is null/undefined');
-          throw new Error('Credentials object is null or undefined. Check backend response.');
+          throw new Error('Invalid credentials: credentials object is null or undefined');
+        }
+        if (!credentials.meetingInfo?.mediaPlacement) {
+          throw new Error('Invalid credentials: mediaPlacement is missing');
+        }
+        if (!credentials.attendeeInfo?.attendeeId) {
+          throw new Error('Invalid credentials: attendeeId is missing');
+        }
+        if (!credentials.attendeeInfo?.joinToken) {
+          throw new Error('Invalid credentials: joinToken is missing');
+        }
+        if (!credentials.meetingInfo?.meetingId) {
+          throw new Error('Invalid credentials: meetingId is missing');
         }
         
-        if (!credentials.meetingInfo) {
-          console.error('[VIDEO_CALL] ✗ meetingInfo is missing');
-          throw new Error('meetingInfo is null or undefined in credentials. Check backend meeting creation.');
-        }
+        currentAttendeeIdRef.current = credentials.attendeeInfo.attendeeId;
         
-        if (!credentials.attendeeInfo) {
-          console.error('[VIDEO_CALL] ✗ attendeeInfo is missing');
-          throw new Error('attendeeInfo is null or undefined in credentials. Check backend attendee creation.');
-        }
-        
-        console.log('[VIDEO_CALL] Meeting ID:', credentials.meetingInfo.meetingId);
-        console.log('[VIDEO_CALL] Attendee ID:', credentials.attendeeInfo.attendeeId);
-        console.log('[VIDEO_CALL] Join Token:', credentials.attendeeInfo.joinToken ? 'Present' : 'Missing');
-        
-        if (!credentials.meetingInfo.meetingId) {
-          throw new Error('meetingId is missing in meetingInfo');
-        }
-        
-        if (!credentials.attendeeInfo.attendeeId) {
-          throw new Error('attendeeId is missing in attendeeInfo. Backend may not have created attendee properly.');
-        }
-        
-        if (!credentials.attendeeInfo.joinToken) {
-          throw new Error('joinToken is missing in attendeeInfo. Backend may not have created attendee properly.');
-        }
-        
-        currentUserIdRef.current = credentials.attendeeInfo.attendeeId;
-        console.log('[VIDEO_CALL] ✓✓✓ Credentials validated successfully');
+        console.log('[VIDEO_CALL] Credentials validated:', {
+          meetingId: credentials.meetingInfo.meetingId,
+          attendeeId: credentials.attendeeInfo.attendeeId,
+          hasMediaPlacement: !!credentials.meetingInfo.mediaPlacement,
+          hasAudioHostUrl: !!credentials.meetingInfo.mediaPlacement?.audioHostUrl,
+        });
 
-        if (!isMounted) return;
-
-        // STEP 1.3: Import and initialize Chime SDK
-        console.log('[VIDEO_CALL] Step 1.3: Loading Chime SDK...');
-        
-        if (Platform.OS !== 'web') {
-          throw new Error('Video calling is only supported on web platform');
-        }
-
-        // Import Chime SDK dynamically - avoid Metro bundler issues
-        let chimeSDK: any;
-        try {
-          // Try using the wrapper's load function
-          const wrapperModule = await import('@/lib/chime-sdk-web');
-          if (wrapperModule.loadChimeSDK) {
-            chimeSDK = await wrapperModule.loadChimeSDK();
-            console.log('[VIDEO_CALL] ✓ Chime SDK loaded via wrapper function');
-          } else {
-            throw new Error('loadChimeSDK function not found');
-          }
-        } catch (wrapperError: any) {
-          console.warn('[VIDEO_CALL] Wrapper load failed, trying direct import:', wrapperError?.message);
-          // Fallback: direct dynamic import
-          try {
-            const directImport = await import('amazon-chime-sdk-js');
-            chimeSDK = directImport.default || directImport;
-            console.log('[VIDEO_CALL] ✓ Chime SDK loaded via direct import');
-          } catch (directError: any) {
-            console.error('[VIDEO_CALL] Direct import also failed:', directError?.message);
-            throw new Error(`Failed to load Chime SDK: ${directError?.message || 'Unknown error'}. Please restart Metro with: npm start -- --clear`);
-          }
-        }
-        
-        if (!chimeSDK || !chimeSDK.DefaultMeetingSession || !chimeSDK.MeetingSessionConfiguration) {
-          console.error('[VIDEO_CALL] Chime SDK structure:', Object.keys(chimeSDK || {}));
-          throw new Error('Chime SDK components not found. SDK structure is invalid.');
-        }
-        
-        console.log('[VIDEO_CALL] ✓ Chime SDK validated');
-
-        // STEP 1.4: Create meeting session configuration
-        console.log('[VIDEO_CALL] Step 1.4: Creating session configuration...');
-        
+        // Load Chime SDK
+        const chimeSDK = await import('@/lib/chime-sdk-web').then(m => m.loadChimeSDK());
         const {
           DefaultMeetingSession,
           DefaultDeviceController,
-          DefaultEventController,
           MeetingSessionConfiguration,
           LogLevel,
           ConsoleLogger,
         } = chimeSDK;
 
-        const logger = new ConsoleLogger('VideoCall', LogLevel.INFO);
-        const deviceController = new DefaultDeviceController(logger);
-        deviceControllerRef.current = deviceController; // Store device controller ref
-        // @ts-ignore - DefaultEventController constructor signature
-        const eventController = new DefaultEventController(logger);
+        // Create configuration object in the format Chime SDK expects
+        // SDK can handle camelCase properties, MeetingSessionConfiguration will handle conversion
+        const mediaPlacement = credentials.meetingInfo.mediaPlacement;
         
-        // Create configuration object exactly as Chime SDK expects
-        // Double-check we have all required fields before using them
-        console.log('[VIDEO_CALL] Creating MeetingSessionConfiguration...');
-        
-        // CRITICAL: Re-validate that attendeeInfo is still not null before accessing it
-        if (!credentials || !credentials.attendeeInfo) {
-          console.error('[VIDEO_CALL] ✗✗✗ CRITICAL: attendeeInfo is null!');
-          console.error('[VIDEO_CALL] Full credentials:', JSON.stringify(credentials, null, 2));
-          throw new Error('attendeeInfo is null when creating configuration. Backend may have returned invalid response.');
+        // Validate required fields first
+        if (!mediaPlacement.audioHostUrl) {
+          throw new Error('Invalid credentials: audioHostUrl is missing in mediaPlacement');
         }
-        
-        // Extract values with null checks at every step
-        const meetingId = credentials.meetingInfo?.meetingId;
-        const mediaRegion = credentials.meetingInfo?.mediaRegion || 'us-east-1';
-        const mediaPlacement = credentials.meetingInfo?.mediaPlacement;
-        
-        // Safe access to attendeeInfo - already validated above but be extra safe
-        const attendeeInfo = credentials.attendeeInfo;
-        if (!attendeeInfo) {
-          throw new Error('attendeeInfo became null between validation and use');
+        if (!mediaPlacement.signalingUrl) {
+          throw new Error('Invalid credentials: signalingUrl is missing in mediaPlacement');
         }
-        
-        // Extract and validate values - ensure they are non-empty strings
-        const attendeeId = String(attendeeInfo.attendeeId || '').trim();
-        const joinToken = String(attendeeInfo.joinToken || '').trim();
-        const externalUserId = String(attendeeInfo.externalUserId || attendeeId || '').trim();
-        
-        console.log('[VIDEO_CALL] Configuration values:');
-        console.log('[VIDEO_CALL] - meetingId:', meetingId);
-        console.log('[VIDEO_CALL] - mediaRegion:', mediaRegion);
-        console.log('[VIDEO_CALL] - attendeeId:', attendeeId, '(type:', typeof attendeeId, ', length:', attendeeId.length, ')');
-        console.log('[VIDEO_CALL] - joinToken:', joinToken ? `Present (length: ${joinToken.length})` : 'Missing');
-        console.log('[VIDEO_CALL] - externalUserId:', externalUserId);
-        
-        // Final safety check with detailed error messages - ensure values are non-empty strings
-        if (!meetingId || typeof meetingId !== 'string' || meetingId.trim() === '') {
-          throw new Error('meetingId is missing, null, or not a valid string');
+        if (!mediaPlacement.turnControlUrl) {
+          throw new Error('Invalid credentials: turnControlUrl is missing in mediaPlacement');
         }
-        if (!attendeeId || attendeeId.length === 0) {
-          throw new Error(`attendeeId is missing or empty in attendeeInfo. Value: "${attendeeId}", Type: ${typeof attendeeInfo.attendeeId}`);
-        }
-        if (!joinToken || joinToken.length === 0) {
-          throw new Error(`joinToken is missing or empty in attendeeInfo. Value length: ${joinToken?.length || 0}, Type: ${typeof attendeeInfo.joinToken}`);
-        }
-        if (!mediaPlacement) {
-          throw new Error('mediaPlacement is missing or null');
-        }
-        
-        // Build the configuration object exactly as Chime SDK expects
-        // The SDK is very strict about the structure - must match AWS API response format
-        // Ensure MediaPlacement has all required properties
-        if (!mediaPlacement || typeof mediaPlacement !== 'object') {
-          throw new Error('mediaPlacement is missing or invalid');
-        }
-        
-        // Deep clone and convert to PascalCase as Chime SDK expects
-        // The SDK expects PascalCase property names (AudioHostUrl, not audioHostUrl)
-        const mediaPlacementClone: any = {};
-        
-        // Map lowercase keys to PascalCase keys
-        const keyMapping: Record<string, string> = {
-          audioHostUrl: 'AudioHostUrl',
-          audioFallbackUrl: 'AudioFallbackUrl',
-          signalingUrl: 'SignalingUrl',
-          turnControlUrl: 'TurnControlUrl',
-          screenDataUrl: 'ScreenDataUrl',
-          screenViewingUrl: 'ScreenViewingUrl',
-          screenSharingUrl: 'ScreenSharingUrl',
-          eventIngestionUrl: 'EventIngestionUrl',
-          // Also support PascalCase if backend already uses it
-          AudioHostUrl: 'AudioHostUrl',
-          AudioFallbackUrl: 'AudioFallbackUrl',
-          SignalingUrl: 'SignalingUrl',
-          TurnControlUrl: 'TurnControlUrl',
-          ScreenDataUrl: 'ScreenDataUrl',
-          ScreenViewingUrl: 'ScreenViewingUrl',
-          ScreenSharingUrl: 'ScreenSharingUrl',
-          EventIngestionUrl: 'EventIngestionUrl',
-        };
-        
-        // Copy all properties with proper casing and validate they're not empty
-        for (const [key, value] of Object.entries(mediaPlacement)) {
-          const pascalKey = keyMapping[key] || key;
-          if (value !== undefined && value !== null && value !== '') {
-            mediaPlacementClone[pascalKey] = value;
-          } else {
-            console.warn(`[VIDEO_CALL] Warning: MediaPlacement.${key} is empty or null`);
-          }
-        }
-        
-        // Validate all required MediaPlacement properties are present
-        const requiredMediaPlacementKeys = [
-          'AudioHostUrl',
-          'SignalingUrl',
-          'TurnControlUrl',
-        ];
-        
-        for (const key of requiredMediaPlacementKeys) {
-          if (!mediaPlacementClone[key]) {
-            throw new Error(`Required MediaPlacement property ${key} is missing or empty`);
-          }
-        }
-        
-        // Construct the configuration object - the SDK expects this exact structure
-        // CRITICAL: Include credentials directly in addition to Attendee object
-        // Some SDK versions may look for credentials directly on the config object
-        const configObject = {
+
+        // Build configuration object - MeetingSessionConfiguration expects PascalCase
+        // But SDK may also need camelCase for internal access
+        const configObject: any = {
           Meeting: {
-            MeetingId: meetingId,
-            MediaRegion: mediaRegion,
-            MediaPlacement: mediaPlacementClone,
+            MeetingId: credentials.meetingInfo.meetingId,
+            MediaRegion: credentials.meetingInfo.mediaRegion || 'us-east-1',
+            MediaPlacement: {
+              AudioHostUrl: mediaPlacement.audioHostUrl,
+              AudioFallbackUrl: mediaPlacement.audioFallbackUrl || '',
+              SignalingUrl: mediaPlacement.signalingUrl,
+              TurnControlUrl: mediaPlacement.turnControlUrl,
+              ScreenDataUrl: mediaPlacement.screenDataUrl || '',
+              ScreenViewingUrl: mediaPlacement.screenViewingUrl || '',
+              ScreenSharingUrl: mediaPlacement.screenSharingUrl || '',
+              EventIngestionUrl: mediaPlacement.eventIngestionUrl || '',
+            },
           },
           Attendee: {
-            AttendeeId: attendeeId,
-            ExternalUserId: externalUserId || attendeeId, // Fallback to attendeeId if missing
-            JoinToken: joinToken,
+            AttendeeId: credentials.attendeeInfo.attendeeId,
+            ExternalUserId: credentials.attendeeInfo.externalUserId || credentials.attendeeInfo.attendeeId || '',
+            JoinToken: credentials.attendeeInfo.joinToken,
           },
-          // Also include credentials directly for SDK compatibility
-          // Some SDK versions may access credentials from here instead of extracting from Attendee
+          // Also include camelCase versions for SDK internal access
+          meeting: {
+            meetingId: credentials.meetingInfo.meetingId,
+            mediaRegion: credentials.meetingInfo.mediaRegion || 'us-east-1',
+            mediaPlacement: {
+              audioHostUrl: mediaPlacement.audioHostUrl,
+              audioFallbackUrl: mediaPlacement.audioFallbackUrl || '',
+              signalingUrl: mediaPlacement.signalingUrl,
+              turnControlUrl: mediaPlacement.turnControlUrl,
+              screenDataUrl: mediaPlacement.screenDataUrl || '',
+              screenViewingUrl: mediaPlacement.screenViewingUrl || '',
+              screenSharingUrl: mediaPlacement.screenSharingUrl || '',
+              eventIngestionUrl: mediaPlacement.eventIngestionUrl || '',
+            },
+          },
+          attendee: {
+            attendeeId: credentials.attendeeInfo.attendeeId,
+            externalUserId: credentials.attendeeInfo.externalUserId || credentials.attendeeInfo.attendeeId || '',
+            joinToken: credentials.attendeeInfo.joinToken,
+          },
+          // Some SDK versions may access credentials directly
           credentials: {
-            attendeeId: attendeeId,
-            joinToken: joinToken,
-            externalUserId: externalUserId || attendeeId,
+            attendeeId: credentials.attendeeInfo.attendeeId,
+            externalUserId: credentials.attendeeInfo.externalUserId || credentials.attendeeInfo.attendeeId || '',
+            joinToken: credentials.attendeeInfo.joinToken,
+            meetingId: credentials.meetingInfo.meetingId,
+            mediaRegion: credentials.meetingInfo.mediaRegion || 'us-east-1',
           },
         };
-        
-        // CRITICAL FIX: Patch the event controller to ensure it has access to credentials
-        // The SDK's DefaultEventController.getAttributes() tries to access configuration.credentials.attendeeId
-        // We need to ensure it can access credentials even if the SDK didn't extract them properly
-        const eventControllerAsAny = eventController as any;
-        
-        // Store credentials in the event controller for later access
-        const eventControllerCredentials = {
-          attendeeId: configObject.Attendee.AttendeeId,
-          joinToken: configObject.Attendee.JoinToken,
-          externalUserId: configObject.Attendee.ExternalUserId,
-        };
-        
-        // Store credentials on the event controller
-        eventControllerAsAny._credentials = eventControllerCredentials;
-        eventControllerAsAny.credentials = eventControllerCredentials;
-        
-        // Patch getAttributes method if it exists to ensure it returns proper attributes
-        const originalGetAttributes = eventControllerAsAny.getAttributes;
-        if (typeof originalGetAttributes === 'function') {
-          eventControllerAsAny.getAttributes = function(...args: any[]) {
-            try {
-              // Call the original method
-              const result = originalGetAttributes.apply(this, args);
-              
-              // Ensure the result has attendeeId
-              if (result && typeof result === 'object') {
-                if (!result.attendeeId) {
-                  result.attendeeId = eventControllerCredentials.attendeeId;
-                }
-              }
-              
-              return result;
-            } catch (error: any) {
-              // If getAttributes fails because credentials are undefined, provide a fallback
-              if (error?.message?.includes('attendeeId') || error?.message?.includes('attendeeld')) {
-                console.warn('[VIDEO_CALL] getAttributes failed, returning fallback with credentials');
-                return {
-                  attendeeId: eventControllerCredentials.attendeeId,
-                  joinToken: eventControllerCredentials.joinToken,
-                  externalUserId: eventControllerCredentials.externalUserId,
-                };
-              }
-              throw error;
-            }
-          };
-        }
-        
-        // Also ensure the event controller's configuration reference has credentials
-        if (eventControllerAsAny.configuration) {
-          const eventConfig = eventControllerAsAny.configuration;
-          if (!eventConfig.credentials) {
-            (eventConfig as any).credentials = eventControllerCredentials;
-          }
-        }
-        
-        console.log('[VIDEO_CALL] Event controller patched with credentials');
-        
-        console.log('[VIDEO_CALL] Config object structure:', JSON.stringify(configObject, null, 2));
-        console.log('[VIDEO_CALL] Config validation:');
-        console.log('[VIDEO_CALL] - Meeting.MeetingId:', !!configObject.Meeting.MeetingId);
-        console.log('[VIDEO_CALL] - Meeting.MediaRegion:', !!configObject.Meeting.MediaRegion);
-        console.log('[VIDEO_CALL] - Meeting.MediaPlacement:', !!configObject.Meeting.MediaPlacement);
-        console.log('[VIDEO_CALL] - Meeting.MediaPlacement.AudioHostUrl:', !!configObject.Meeting.MediaPlacement.AudioHostUrl);
-        console.log('[VIDEO_CALL] - Meeting.MediaPlacement.SignalingUrl:', !!configObject.Meeting.MediaPlacement.SignalingUrl);
-        console.log('[VIDEO_CALL] - Attendee.AttendeeId:', !!configObject.Attendee.AttendeeId);
-        console.log('[VIDEO_CALL] - Attendee.JoinToken:', !!configObject.Attendee.JoinToken);
-        console.log('[VIDEO_CALL] - Attendee.ExternalUserId:', !!configObject.Attendee.ExternalUserId);
-        
-        // Create configuration with error handling
-        let meetingConfiguration;
-        try {
-          // Test if MeetingSessionConfiguration exists and is a constructor
-          if (typeof MeetingSessionConfiguration !== 'function') {
-            throw new Error('MeetingSessionConfiguration is not a constructor function');
-          }
-          
-          // CRITICAL FIX: Create a Proxy wrapper to ensure credentials are always accessible
-          // This intercepts property access and ensures credentials.attendeeId is never undefined
-          const credentialsObject = {
-            attendeeId: configObject.Attendee.AttendeeId,
-            joinToken: configObject.Attendee.JoinToken,
-            externalUserId: configObject.Attendee.ExternalUserId,
-          };
-          
-          // Store credentials in a closure for the Proxy
-          let credentialsStore = { ...credentialsObject };
-          
-          // Create the base configuration
-          meetingConfiguration = new MeetingSessionConfiguration(configObject);
-          
-          // CRITICAL: Verify the SDK properly extracted credentials
-          if (!meetingConfiguration) {
-            throw new Error('MeetingSessionConfiguration constructor returned null or undefined');
-          }
-          
-          // Wrap the configuration in a Proxy to intercept credential access
-          const configAsAny = meetingConfiguration as any;
-          
-          // Ensure credentials are set immediately
-          try {
-            configAsAny.credentials = credentialsStore;
-          } catch (e) {
-            Object.defineProperty(configAsAny, 'credentials', {
-              get: () => credentialsStore,
-              set: (value: any) => {
-                credentialsStore = value || credentialsStore;
-              },
-              enumerable: true,
-              configurable: true,
-            });
-          }
-          
-          // Also try to set it on any internal _credentials or private properties
-          if (configAsAny._credentials !== undefined) {
-            configAsAny._credentials = credentialsStore;
-          }
-          
-          // Create a Proxy wrapper that intercepts property access
-          // This ensures credentials.attendeeId is always accessible
-          const proxiedConfig = new Proxy(meetingConfiguration, {
-            get: (target, prop) => {
-              // If accessing credentials, ensure it exists
-              if (prop === 'credentials') {
-                const creds = target[prop as keyof typeof target] || configAsAny.credentials;
-                if (!creds || !creds.attendeeId) {
-                  // Return our stored credentials
-                  return credentialsStore;
-                }
-                return creds;
-              }
-              
-              // For all other properties, return normally
-              const value = target[prop as keyof typeof target];
-              if (value !== undefined && value !== null) {
-                return value;
-              }
-              
-              // If it's a nested object access that might need credentials, check
-              return configAsAny[prop];
-            },
-            set: (target, prop, value) => {
-              if (prop === 'credentials') {
-                // Always ensure credentials have attendeeId
-                if (value && !value.attendeeId) {
-                  value.attendeeId = credentialsStore.attendeeId;
-                }
-                credentialsStore = value || credentialsStore;
-                configAsAny.credentials = credentialsStore;
-              }
-              (target as any)[prop] = value;
-              return true;
-            },
-          });
-          
-          // Use the proxied configuration
-          meetingConfiguration = proxiedConfig as typeof meetingConfiguration;
-          
-          console.log('[VIDEO_CALL] Configuration wrapped in Proxy, credentials guaranteed accessible');
-          console.log('[VIDEO_CALL] Credentials verification:', {
-            hasCredentials: !!configAsAny.credentials,
-            attendeeId: configAsAny.credentials?.attendeeId || credentialsStore.attendeeId,
-          });
-          
-          // Check if credentials were properly extracted
-          // The SDK might store them in different places depending on version
-          // Note: configAsAny is already defined above
-          
-          // Try multiple ways to access credentials
-          const credentialsCheck = {
-            credentials: configAsAny.credentials,
-            credentialsAttendeeId: configAsAny.credentials?.attendeeId,
-            credentialsJoinToken: configAsAny.credentials?.joinToken,
-            attendeeId: configAsAny.attendeeId,
-            joinToken: configAsAny.joinToken,
-            // Some SDK versions use getters
-            getCredentials: typeof configAsAny.getCredentials === 'function' ? configAsAny.getCredentials() : null,
-          };
-          
-          console.log('[VIDEO_CALL] ✓✓✓ Configuration created successfully');
-          console.log('[VIDEO_CALL] Configuration instance details:', {
-            meetingId: meetingConfiguration.meetingId,
-            credentialsCheck: credentialsCheck,
-          });
-          
-          // Validate that credentials were properly extracted
-          // The SDK should have extracted attendeeId and joinToken from Attendee object
-          // CRITICAL FIX: Some SDK versions may store credentials differently
-          // Let's check multiple possible locations and ensure credentials are accessible
-          
-          let credentialsFound = false;
-          let actualCredentials: any = null;
-          
-          // Check various possible locations for credentials
-          if (configAsAny.credentials && configAsAny.credentials.attendeeId) {
-            credentialsFound = true;
-            actualCredentials = configAsAny.credentials;
-          } else if (configAsAny.attendeeId && configAsAny.joinToken) {
-            // SDK might store them directly on the config object
-            credentialsFound = true;
-            actualCredentials = {
-              attendeeId: configAsAny.attendeeId,
-              joinToken: configAsAny.joinToken,
-            };
-            // Manually assign to credentials property for compatibility
-            configAsAny.credentials = actualCredentials;
-          } else if (configAsAny._credentials) {
-            // Some SDK versions use private _credentials
-            credentialsFound = true;
-            actualCredentials = configAsAny._credentials;
-          }
-          
-          if (!credentialsFound || !actualCredentials?.attendeeId) {
-            console.error('[VIDEO_CALL] ⚠️ WARNING: credentials.attendeeId is not accessible after configuration creation');
-            console.error('[VIDEO_CALL] Configuration keys:', Object.keys(meetingConfiguration));
-            console.error('[VIDEO_CALL] Configuration prototype:', Object.getPrototypeOf(meetingConfiguration));
-            console.error('[VIDEO_CALL] Full configuration object (first level):', JSON.stringify(meetingConfiguration, null, 2));
-            
-            // Try to manually construct credentials from the config object
-            // The SDK should have stored the Attendee information somewhere
-            console.error('[VIDEO_CALL] Attempting to manually construct credentials from config object...');
-            
-            // If we can't find credentials, try to manually set them from our configObject
-            // This is a workaround for SDK versions that don't properly extract credentials
-            try {
-              configAsAny.credentials = {
-                attendeeId: configObject.Attendee.AttendeeId,
-                joinToken: configObject.Attendee.JoinToken,
-                externalUserId: configObject.Attendee.ExternalUserId,
-              };
-              
-              // Verify manual assignment worked
-              if (configAsAny.credentials && configAsAny.credentials.attendeeId) {
-                console.log('[VIDEO_CALL] ✓✓✓ Manually assigned credentials successfully');
-                actualCredentials = configAsAny.credentials;
-                credentialsFound = true;
-              }
-            } catch (manualAssignError) {
-              console.error('[VIDEO_CALL] Failed to manually assign credentials:', manualAssignError);
-            }
-            
-            if (!credentialsFound || !actualCredentials?.attendeeId) {
-              throw new Error('SDK did not properly extract credentials from configuration. Attendee object may be malformed or SDK version incompatible.');
-            }
-          }
-          
-          console.log('[VIDEO_CALL] ✓✓✓ Credentials validated:', {
-            hasCredentials: !!actualCredentials,
-            attendeeId: actualCredentials?.attendeeId ? 'Present' : 'Missing',
-            joinToken: actualCredentials?.joinToken ? 'Present' : 'Missing',
-          });
-          
-        } catch (configError: any) {
-          console.error('[VIDEO_CALL] ✗✗✗ Configuration creation failed:', configError);
-          console.error('[VIDEO_CALL] Error message:', configError?.message);
-          console.error('[VIDEO_CALL] Error stack:', configError?.stack);
-          console.error('[VIDEO_CALL] Config object that failed:', JSON.stringify(configObject, null, 2));
-          
-          // Provide detailed diagnostic information
-          console.error('[VIDEO_CALL] Diagnostic information:');
-          console.error('[VIDEO_CALL] - Attendee.AttendeeId type:', typeof configObject.Attendee.AttendeeId);
-          console.error('[VIDEO_CALL] - Attendee.AttendeeId value:', configObject.Attendee.AttendeeId);
-          console.error('[VIDEO_CALL] - Attendee.JoinToken type:', typeof configObject.Attendee.JoinToken);
-          console.error('[VIDEO_CALL] - Attendee.JoinToken length:', configObject.Attendee.JoinToken?.length);
-          console.error('[VIDEO_CALL] - Meeting.MeetingId:', configObject.Meeting.MeetingId);
-          
-          throw new Error(`Failed to create MeetingSessionConfiguration: ${configError?.message || 'Unknown error'}`);
+
+        // Double-check that attendeeId is not null/undefined before creating session
+        if (!configObject.Attendee.AttendeeId) {
+          throw new Error('Cannot create session: AttendeeId is null or undefined in config object');
         }
 
-        // STEP 1.5: Create meeting session
-        console.log('[VIDEO_CALL] Step 1.5: Creating meeting session...');
-        console.log('[VIDEO_CALL] Validating configuration before session creation...');
+        console.log('[VIDEO_CALL] Creating MeetingSessionConfiguration with:', {
+          MeetingId: configObject.Meeting.MeetingId,
+          AttendeeId: configObject.Attendee.AttendeeId,
+          ExternalUserId: configObject.Attendee.ExternalUserId,
+          hasJoinToken: !!configObject.Attendee.JoinToken,
+          JoinTokenLength: configObject.Attendee.JoinToken?.length || 0,
+        });
+
+        // Create meeting session with error handling
+        const logger = new ConsoleLogger('VideoCall', LogLevel.WARN);
+        let configuration: any;
+        let session: any;
         
-        // CRITICAL: Final validation that credentials are accessible
-        // The SDK's DefaultMeetingSession constructor will try to access configuration.credentials.attendeeId
-        // If it's null or undefined, we'll get the error we're seeing
-        const configAsAnyFinal = meetingConfiguration as any;
-        
-        // Ensure credentials object exists and is properly structured
-        // CRITICAL FIX: Use a function to safely create credentials to avoid any property access issues
-        const ensureCredentialsExist = () => {
-          if (!configAsAnyFinal) {
-            throw new Error('meetingConfiguration is null or undefined');
-          }
-          
-          // If credentials don't exist or are null/undefined, create them
-          if (!configAsAnyFinal.credentials || typeof configAsAnyFinal.credentials !== 'object') {
-            console.error('[VIDEO_CALL] ⚠️⚠️⚠️ CRITICAL: credentials property is missing or invalid before session creation!');
-            console.error('[VIDEO_CALL] This will cause DefaultMeetingSession to fail');
-            console.error('[VIDEO_CALL] Attempting to manually assign credentials one more time...');
-            
-            // Safely extract values from configObject with null checks
-            const safeAttendeeId = configObject?.Attendee?.AttendeeId;
-            const safeJoinToken = configObject?.Attendee?.JoinToken;
-            const safeExternalUserId = configObject?.Attendee?.ExternalUserId;
-            
-            if (!safeAttendeeId || !safeJoinToken) {
-              throw new Error(`Cannot create credentials: AttendeeId or JoinToken is missing. AttendeeId: ${safeAttendeeId}, JoinToken: ${safeJoinToken ? 'present' : 'missing'}`);
-            }
-            
-            // Create a new credentials object with all required properties
-            const newCredentials = {
-              attendeeId: String(safeAttendeeId).trim(),
-              joinToken: String(safeJoinToken).trim(),
-              externalUserId: safeExternalUserId ? String(safeExternalUserId).trim() : String(safeAttendeeId).trim(),
-            };
-            
-            // Try multiple approaches to set credentials
-            try {
-              configAsAnyFinal.credentials = newCredentials;
-            } catch (assignError) {
-              console.warn('[VIDEO_CALL] Direct assignment failed, trying Object.defineProperty');
-              try {
-                Object.defineProperty(configAsAnyFinal, 'credentials', {
-                  value: newCredentials,
-                  writable: true,
-                  enumerable: true,
-                  configurable: true,
-                });
-              } catch (defineError) {
-                console.error('[VIDEO_CALL] Object.defineProperty also failed:', defineError);
-                throw new Error('Failed to assign credentials to configuration object');
-              }
-            }
-            
-            console.log('[VIDEO_CALL] After manual assignment:');
-            console.log('[VIDEO_CALL] - credentials:', !!configAsAnyFinal.credentials);
-            console.log('[VIDEO_CALL] - credentials type:', typeof configAsAnyFinal.credentials);
-            console.log('[VIDEO_CALL] - credentials.attendeeId:', configAsAnyFinal.credentials?.attendeeId);
-            console.log('[VIDEO_CALL] - credentials.attendeeId type:', typeof configAsAnyFinal.credentials?.attendeeId);
-          }
-          
-          // Final validation that credentials.attendeeId exists and is a non-empty string
-          const creds = configAsAnyFinal.credentials;
-          if (!creds || typeof creds !== 'object') {
-            throw new Error('credentials is not an object after assignment');
-          }
-          
-          // Use bracket notation to avoid any potential typo issues
-          const attendeeIdValue = creds['attendeeId'] || creds.attendeeId;
-          if (!attendeeIdValue || typeof attendeeIdValue !== 'string' || attendeeIdValue.trim() === '') {
-            throw new Error(`credentials.attendeeId is invalid. Value: "${attendeeIdValue}", Type: ${typeof attendeeIdValue}`);
-          }
-          
-          return creds;
-        };
-        
-        // Ensure credentials exist before proceeding
-        ensureCredentialsExist();
-        
-        // Final validation - ensure credentials.attendeeId is accessible (using safe access)
-        const finalCredentials = configAsAnyFinal.credentials;
-        if (!finalCredentials || !(finalCredentials['attendeeId'] || finalCredentials.attendeeId)) {
-          console.error('[VIDEO_CALL] ✗✗✗ FATAL: Cannot proceed - credentials.attendeeId is not accessible');
-          console.error('[VIDEO_CALL] Configuration object keys:', Object.keys(meetingConfiguration));
-          console.error('[VIDEO_CALL] Configuration prototype keys:', Object.keys(Object.getPrototypeOf(meetingConfiguration)));
-          
-          // If we reach here, credentials should have been set by ensureCredentialsExist()
-          // But let's do one final verification using safe bracket notation
-          const verifyCreds = configAsAnyFinal.credentials;
-          const verifyAttendeeId = verifyCreds?.['attendeeId'] || verifyCreds?.attendeeId;
-          
-          if (!verifyAttendeeId || typeof verifyAttendeeId !== 'string') {
-            throw new Error(`Cannot create meeting session: credentials.attendeeId is still null or invalid after all attempts. Value: "${verifyAttendeeId}", Type: ${typeof verifyAttendeeId}. This indicates the SDK's MeetingSessionConfiguration constructor did not properly extract credentials from the Attendee object. Please verify the configuration object structure matches AWS Chime API response format.`);
-          }
-        }
-        
-        console.log('[VIDEO_CALL] ✓✓✓ Final credentials validation passed:');
-        console.log('[VIDEO_CALL] - meetingConfiguration type:', typeof meetingConfiguration);
-        console.log('[VIDEO_CALL] - meetingConfiguration.meetingId:', meetingConfiguration?.meetingId);
-        console.log('[VIDEO_CALL] - meetingConfiguration.credentials:', !!meetingConfiguration.credentials);
-        
-        // Use safe bracket notation to access attendeeId to avoid any potential issues
-        const safeCredentials = configAsAnyFinal.credentials || meetingConfiguration.credentials;
-        const safeAttendeeIdCheck = safeCredentials?.['attendeeId'] || safeCredentials?.attendeeId;
-        const safeJoinTokenCheck = safeCredentials?.['joinToken'] || safeCredentials?.joinToken;
-        
-        console.log('[VIDEO_CALL] - meetingConfiguration.credentials?.attendeeId:', safeAttendeeIdCheck);
-        console.log('[VIDEO_CALL] - meetingConfiguration.credentials?.joinToken:', safeJoinTokenCheck ? 'Present' : 'Missing');
-        
-        let meetingSession;
         try {
-          // Validate all parameters before passing
-          if (!logger) throw new Error('logger is null');
-          if (!deviceController) throw new Error('deviceController is null');
-          if (!eventController) throw new Error('eventController is null');
+          const deviceController = new DefaultDeviceController(logger);
           
-          console.log('[VIDEO_CALL] Configuration structure validated, creating DefaultMeetingSession...');
+          // Create configuration - ensure credentials are accessible
+          configuration = new MeetingSessionConfiguration(configObject);
           
-          // Use safe bracket notation to access credentials
-          const configCredentials = configAsAnyFinal.credentials || meetingConfiguration.credentials;
-          const configAttendeeId = configCredentials?.['attendeeId'] || configCredentials?.attendeeId;
+          // Verify configuration was created successfully
+          if (!configuration) {
+            throw new Error('MeetingSessionConfiguration creation returned null/undefined');
+          }
           
-          console.log('[VIDEO_CALL] Configuration that will be passed:', {
-            meetingId: meetingConfiguration.meetingId,
-            hasCredentials: !!configCredentials,
-            credentialsAttendeeId: configAttendeeId,
-            credentialsType: typeof configCredentials,
+          // Ensure credentials are accessible - DefaultEventController needs configuration.credentials.attendeeId
+          const configAny = configuration as any;
+          
+          // Manually ensure credentials property exists with attendeeId
+          // This is needed because DefaultEventController.setupEventReporter accesses configuration.credentials.attendeeId
+          if (!configAny.credentials) {
+            configAny.credentials = {
+              attendeeId: credentials.attendeeInfo.attendeeId,
+              externalUserId: credentials.attendeeInfo.externalUserId || credentials.attendeeInfo.attendeeId || '',
+              joinToken: credentials.attendeeInfo.joinToken,
+              meetingId: credentials.meetingInfo.meetingId,
+              mediaRegion: credentials.meetingInfo.mediaRegion || 'us-east-1',
+            };
+            console.log('[VIDEO_CALL] Manually set credentials on configuration object');
+          }
+          
+          // Verify attendeeId is accessible
+          if (!configAny.credentials?.attendeeId && !configAny.credentials?.AttendeeId) {
+            throw new Error('AttendeeId not accessible from configuration.credentials - cannot create session');
+          }
+          
+          console.log('[VIDEO_CALL] Configuration created successfully:', {
+            attendeeId: configAny.credentials.attendeeId || configAny.credentials.AttendeeId,
+            hasCredentials: !!configAny.credentials,
           });
           
-          meetingSession = new DefaultMeetingSession(
-            meetingConfiguration,
+          session = new DefaultMeetingSession(
+            configuration,
             logger,
-            deviceController,
-            eventController
+            deviceController
           );
-          console.log('[VIDEO_CALL] ✓✓✓ Meeting session created successfully!');
-          console.log('[VIDEO_CALL] Session audioVideo:', !!meetingSession?.audioVideo);
-          meetingSessionRef.current = meetingSession;
-        } catch (sessionError: any) {
-          console.error('[VIDEO_CALL] ✗✗✗ Meeting session creation failed:', sessionError);
-          console.error('[VIDEO_CALL] Error message:', sessionError?.message);
-          console.error('[VIDEO_CALL] Error stack:', sessionError?.stack);
-          console.error('[VIDEO_CALL] Configuration that failed:', {
-            meetingId: meetingConfiguration?.meetingId,
-            hasCredentials: !!meetingConfiguration?.credentials,
-            credentialsAttendeeId: meetingConfiguration?.credentials?.attendeeId,
-            configObject: JSON.stringify(configObject, null, 2),
-          });
-          
-          // Try to diagnose the issue
-          if (sessionError?.message?.includes('attendeeId')) {
-            console.error('[VIDEO_CALL] DIAGNOSIS: SDK is trying to read attendeeId from null');
-            console.error('[VIDEO_CALL] This suggests the configuration.credentials is null inside the SDK');
-            console.error('[VIDEO_CALL] The SDK might be accessing it via a different path');
-          }
-          
-          throw new Error(`Failed to create DefaultMeetingSession: ${sessionError?.message || 'Unknown error'}`);
+        } catch (configError: any) {
+          console.error('[VIDEO_CALL] Error creating session configuration:', configError);
+          console.error('[VIDEO_CALL] Config object that failed:', JSON.stringify(configObject, null, 2));
+          throw new Error(`Failed to create meeting session: ${configError.message}`);
         }
 
-        // STEP 1.6: Start the session
-        console.log('[VIDEO_CALL] Step 1.6: Starting meeting session...');
-        
-        // CRITICAL: Wait for session to be fully started before enabling video
-        // Starting video too early can cause "NotConnected" state issues
-        
-        // CRITICAL: Verify credentials are accessible from the meetingSession's configuration
-        // The SDK's start() method will try to access configuration.credentials.attendeeId
-        // The SDK may have stored a reference to the configuration internally, so we need to ensure
-        // that reference also has credentials accessible
-        const sessionConfig = (meetingSession as any).configuration || meetingConfiguration;
-        const sessionConfigAsAny = sessionConfig as any;
-        
-        // Ensure the session's configuration has credentials
-        if (sessionConfig && !sessionConfigAsAny.credentials) {
-          console.log('[VIDEO_CALL] Session config missing credentials, setting them...');
-          const sessionCredentials = {
-            attendeeId: configObject.Attendee.AttendeeId,
-            joinToken: configObject.Attendee.JoinToken,
-            externalUserId: configObject.Attendee.ExternalUserId,
-          };
-          
-          try {
-            sessionConfigAsAny.credentials = sessionCredentials;
+        meetingSessionRef.current = session;
+
+        // Start session
+        await session.audioVideo.start();
+        setIsConnecting(false);
+
+        // Enable video
+        const devices = await session.audioVideo.listVideoInputDevices();
+        if (devices.length > 0) {
+          await session.audioVideo.startVideoInput(devices[0].deviceId);
+        }
+
+        // Set up observers
+    const observer = {
+      videoTileDidUpdate: (tileState: any) => {
+            const attendeeId = tileState.boundAttendeeId;
+            const isLocal = tileState.localTile === true;
+
+            if (isLocal && localVideoRef.current) {
+              session.audioVideo.bindVideoElement(tileState.tileId, localVideoRef.current);
+            } else if (!isLocal && attendeeId && remoteVideoRef.current) {
+              // Subscribe to remote video (required in v3+)
+              const audioVideoAny = session.audioVideo as any;
+              if (audioVideoAny.startRemoteVideo) {
+                audioVideoAny.startRemoteVideo(attendeeId).catch(() => {
+                  // Already subscribed or method not available
+                });
+              }
+              
+              // Bind video element
+              session.audioVideo.bindVideoElement(tileState.tileId, remoteVideoRef.current);
+              
+              // Get email from externalUserId or stored map
+              const externalUserId = tileState.boundExternalUserId;
+              const email = externalUserId || attendeeEmails.get(attendeeId) || attendeeId;
+              setRemoteAttendee({ attendeeId, email });
+            }
+          },
+
+      attendeeDidPresenceChange: (presence: any, attendeeId: string) => {
+            // Update attendee count
+            const audioVideoAny = session.audioVideo as any;
+            const realtimeController = audioVideoAny.realtimeController;
+            if (realtimeController) {
+              try {
+                // Get all current attendees
+                const currentAttendees = realtimeController.getAllRemoteVideoSources?.() || [];
+                const remoteCount = currentAttendees.filter((a: any) => 
+                  a.attendeeId !== currentAttendeeIdRef.current
+                ).length;
+                setAttendeeCount(remoteCount + 1); // +1 for yourself
           } catch (e) {
-            Object.defineProperty(sessionConfigAsAny, 'credentials', {
-              value: sessionCredentials,
-              writable: true,
-              enumerable: true,
-              configurable: true,
-            });
-          }
-        }
-        
-        const sessionCredentials = sessionConfigAsAny?.credentials || sessionConfig?.credentials;
-        const sessionAttendeeId = sessionCredentials?.['attendeeId'] || sessionCredentials?.attendeeId;
-        
-        console.log('[VIDEO_CALL] Pre-start validation:');
-        console.log('[VIDEO_CALL] - sessionConfig exists:', !!sessionConfig);
-        console.log('[VIDEO_CALL] - sessionCredentials exists:', !!sessionCredentials);
-        console.log('[VIDEO_CALL] - sessionAttendeeId:', sessionAttendeeId);
-        console.log('[VIDEO_CALL] - sessionAttendeeId type:', typeof sessionAttendeeId);
-        
-        // CRITICAL: Also check the meetingSession's audioVideo controller
-        // It might have its own reference to the configuration
-        const audioVideoController = (meetingSession as any).audioVideo;
-        const controllerCredentials = {
-          attendeeId: configObject.Attendee.AttendeeId,
-          joinToken: configObject.Attendee.JoinToken,
-          externalUserId: configObject.Attendee.ExternalUserId,
-        };
-        
-        if (audioVideoController) {
-          // Set credentials on the controller itself
-          if (!audioVideoController.credentials) {
-            (audioVideoController as any).credentials = controllerCredentials;
-          }
-          
-          // Set credentials on the controller's configuration
-          const controllerConfig = (audioVideoController as any).configuration;
-          if (controllerConfig) {
-            if (!controllerConfig.credentials) {
-              console.log('[VIDEO_CALL] AudioVideo controller config missing credentials, setting them...');
-              try {
-                (controllerConfig as any).credentials = controllerCredentials;
-              } catch (e) {
-                Object.defineProperty(controllerConfig, 'credentials', {
-                  value: controllerCredentials,
-                  writable: true,
-                  enumerable: true,
-                  configurable: true,
-                });
-              }
-            }
-          }
-          
-          // CRITICAL: Patch the event controller within audioVideo controller
-          // The DefaultEventController is what's throwing the error
-          const controllerEventController = (audioVideoController as any).eventController;
-          if (controllerEventController) {
-            console.log('[VIDEO_CALL] Patching AudioVideo controllers event controller...');
-            const controllerEventControllerAsAny = controllerEventController as any;
-            
-            // Set credentials on the event controller
-            controllerEventControllerAsAny._credentials = controllerCredentials;
-            controllerEventControllerAsAny.credentials = controllerCredentials;
-            
-            // Patch getAttributes to handle missing credentials
-            const controllerOriginalGetAttributes = controllerEventControllerAsAny.getAttributes;
-            if (typeof controllerOriginalGetAttributes === 'function') {
-              controllerEventControllerAsAny.getAttributes = function(...args: any[]) {
-                try {
-                  // Ensure configuration exists before calling
-                  if (!this.configuration) {
-                    this.configuration = { credentials: controllerCredentials };
-                  } else if (!this.configuration.credentials) {
-                    this.configuration.credentials = controllerCredentials;
-                  }
-                  
-                  const result = controllerOriginalGetAttributes.apply(this, args);
-                  
-                  // Ensure result has attendeeId
-                  if (result && typeof result === 'object' && !result.attendeeId) {
-                    result.attendeeId = controllerCredentials.attendeeId;
-                  }
-                  
-                  return result;
-                } catch (error: any) {
-                  // If getAttributes fails due to undefined attendeeId, return fallback
-                  if (error?.message?.includes('attendeeId') || error?.message?.includes('attendeeld') || 
-                      error?.message?.includes('Cannot read properties of undefined')) {
-                    console.warn('[VIDEO_CALL] EventController.getAttributes failed, returning fallback');
-                    return {
-                      attendeeId: controllerCredentials.attendeeId,
-                      joinToken: controllerCredentials.joinToken,
-                      externalUserId: controllerCredentials.externalUserId,
-                    };
-                  }
-                  throw error;
-                }
-              };
-            }
-            
-            // Also patch configuration property access
-            const controllerOriginalConfig = controllerEventControllerAsAny.configuration;
-            try {
-              Object.defineProperty(controllerEventControllerAsAny, 'configuration', {
-                get: function() {
-                  const config = controllerOriginalConfig || (this as any)._configuration || {};
-                  if (!config.credentials) {
-                    config.credentials = controllerCredentials;
-                  }
-                  return config;
-                },
-                set: function(value: any) {
-                  if (value && !value.credentials) {
-                    value.credentials = controllerCredentials;
-                  }
-                  (this as any)._configuration = value;
-                  if (controllerOriginalConfig) {
-                    Object.assign(controllerOriginalConfig, value);
-                  }
-                },
-                enumerable: true,
-                configurable: true,
-              });
-            } catch (definePropError) {
-              console.warn('[VIDEO_CALL] Could not defineProperty on eventController.configuration, setting directly');
-              if (controllerOriginalConfig) {
-                controllerOriginalConfig.credentials = controllerCredentials;
-              }
-            }
-          }
-        }
-        
-        if (!sessionCredentials || !sessionAttendeeId) {
-          console.error('[VIDEO_CALL] ✗✗✗ CRITICAL: credentials are not accessible from meetingSession before start()');
-          console.error('[VIDEO_CALL] Attempting to fix credentials on session configuration...');
-          
-          // Try to set credentials on the session's internal configuration
-          if (sessionConfig) {
-            const sessionConfigAsAny = sessionConfig as any;
-            const fixedCredentials = {
-              attendeeId: configObject.Attendee.AttendeeId,
-              joinToken: configObject.Attendee.JoinToken,
-              externalUserId: configObject.Attendee.ExternalUserId,
-            };
-            
-            try {
-              sessionConfigAsAny.credentials = fixedCredentials;
-              console.log('[VIDEO_CALL] Set credentials on sessionConfig');
-            } catch (setError) {
-              console.error('[VIDEO_CALL] Failed to set credentials on sessionConfig:', setError);
-              try {
-                Object.defineProperty(sessionConfigAsAny, 'credentials', {
-                  value: fixedCredentials,
-                  writable: true,
-                  enumerable: true,
-                  configurable: true,
-                });
-                console.log('[VIDEO_CALL] Used Object.defineProperty to set credentials on sessionConfig');
-              } catch (defineError) {
-                console.error('[VIDEO_CALL] Object.defineProperty also failed:', defineError);
-              }
-            }
-            
-            // Verify again
-            const verifyCreds = sessionConfigAsAny.credentials;
-            const verifyId = verifyCreds?.['attendeeId'] || verifyCreds?.attendeeId;
-            if (!verifyId) {
-              throw new Error(`Cannot start session: credentials.attendeeId is still not accessible after all attempts. The SDK may be accessing credentials from a different location.`);
-            }
-            
-            console.log('[VIDEO_CALL] ✓✓✓ Credentials fixed on sessionConfig, verification passed');
-          } else {
-            throw new Error('Cannot start session: session configuration is not accessible');
-          }
-        }
-        
-        console.log('[VIDEO_CALL] Starting audioVideo.start()...');
-        try {
-          await meetingSession.audioVideo.start();
-          console.log('[VIDEO_CALL] ✓ Meeting session started');
-          
-          // CRITICAL: Wait for session to be fully connected before enabling video
-          // This prevents "NotConnected" state errors
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          console.log('[VIDEO_CALL] Session connection stabilized');
-        } catch (startError: any) {
-          console.error('[VIDEO_CALL] ✗✗✗ audioVideo.start() failed:', startError);
-          console.error('[VIDEO_CALL] Error message:', startError?.message);
-          console.error('[VIDEO_CALL] Error stack:', startError?.stack);
-          
-          // Check if error is related to attendeeId
-          if (startError?.message?.includes('attendeeId') || startError?.message?.includes('attendeeld')) {
-            console.error('[VIDEO_CALL] DIAGNOSIS: start() failed due to attendeeId access issue');
-            console.error('[VIDEO_CALL] Current credentials state:');
-            console.error('[VIDEO_CALL] - sessionConfig.credentials:', !!sessionConfig?.credentials);
-            console.error('[VIDEO_CALL] - sessionConfig.credentials.attendeeId:', sessionConfig?.credentials?.['attendeeId'] || sessionConfig?.credentials?.attendeeId);
-            
-            throw new Error(`Failed to start meeting session: ${startError.message}. Credentials may not be properly accessible to the SDK's internal methods.`);
-          }
-          
-          throw startError;
-        }
-
-        if (!isMounted) return;
-
-        // STEP 1.7: Set up observers FIRST (before enabling media)
-        console.log('[VIDEO_CALL] Step 1.7: Setting up observers...');
-        setupObservers(meetingSession);
-        
-        // STEP 1.8: Wait a bit more for connection to stabilize
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // STEP 1.9: Enable audio and video (after session is connected)
-        console.log('[VIDEO_CALL] Step 1.9: Enabling audio and video...');
-        await enableMedia(meetingSession);
-        
-        if (!isMounted) return;
-        
-        setCallState('connected');
-        console.log('[VIDEO_CALL] ====== INITIALIZATION COMPLETE ======');
-        
-        // Set up periodic check for remote attendees (in case observers miss them)
-        const attendeeCheckInterval = setInterval(() => {
-          if (!isMountedRef.current || !meetingSessionRef.current) {
-            clearInterval(attendeeCheckInterval);
-            return;
-          }
-          
-          try {
-            const audioVideo = meetingSessionRef.current.audioVideo;
-            updateAttendeeCount(audioVideo);
-            
-            console.log('[VIDEO_CALL] 🔄🔄🔄 PERIODIC CHECK FOR REMOTE VIDEO...');
-            
-            // Also try to bind any unbound remote video tiles
-            let allTiles: any;
-            try {
-              const tilesResult = audioVideo.getAllVideoTiles?.();
-              
-              // Handle different return types
-              if (tilesResult instanceof Map) {
-                allTiles = tilesResult;
-              } else if (Array.isArray(tilesResult)) {
-                allTiles = tilesResult;
-              } else if (tilesResult && typeof tilesResult === 'object') {
-                allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
-              } else {
-                allTiles = new Map();
-              }
-            } catch (e) {
-              console.error('[VIDEO_CALL] Periodic check: Error getting tiles:', e);
-              allTiles = new Map();
-            }
-            
-            const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
-            console.log('[VIDEO_CALL] Periodic check: Found', tileArray.length, 'total tiles');
-            
-            for (const tile of tileArray) {
-              const tileObj = tile as any;
-              
-              // Get tile state
-              let tileState: any = null;
-              if (typeof tileObj.state === 'function') {
-                try {
-                  tileState = tileObj.state();
-                } catch (e) {
-                  // Ignore
+                // Fallback: count based on presence
+                if (presence.present && attendeeId !== currentAttendeeIdRef.current) {
+                  setAttendeeCount(prev => Math.max(prev, 2)); // At least 2 if someone else is present
+                } else if (!presence.present) {
+                  setAttendeeCount(1); // Only yourself
                 }
               }
-              if (!tileState && tileObj.tileState) {
-                tileState = tileObj.tileState;
+            }
+            
+            if (presence.present && attendeeId !== currentAttendeeIdRef.current) {
+              // Get externalUserId from realtime controller
+              try {
+                const audioVideoAny = session.audioVideo as any;
+                const realtimeController = audioVideoAny.realtimeController;
+      if (realtimeController) {
+                  const externalUserId = realtimeController.getAttendeeExternalUserId?.(attendeeId);
+                  if (externalUserId) {
+                    setAttendeeEmails(prev => new Map(prev).set(attendeeId, externalUserId));
+                    setRemoteAttendee({ attendeeId, email: externalUserId });
+        }
+      }
+    } catch (e) {
+                console.log('Could not get externalUserId:', e);
               }
-              if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
-                tileState = tileObj;
-              }
-              
-              if (!tileState) continue;
-              
-              // CRITICAL: Use boundAttendeeId and localTile property
-              const attendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-              const isLocal = tileState.localTile === true;
-              
-              // Skip local tiles
-              if (isLocal || (attendeeId && attendeeId === currentUserIdRef.current)) {
-                continue;
-              }
-              
-              if (attendeeId && attendeeId !== currentUserIdRef.current) {
-                console.log('[VIDEO_CALL] Periodic check: Found remote tile:', {
-                  boundAttendeeId: tileState.boundAttendeeId,
-                  attendeeId: attendeeId,
-                  active: tileState.active,
-                  bound: !!tileState.boundVideoElement,
-                  hasRemoteElement: !!remoteVideoElementRef.current,
-                });
-                
-                // If tile is active but not bound, bind it
-                if (tileState.active && 
-                    remoteVideoElementRef.current &&
-                    tileState.boundVideoElement !== remoteVideoElementRef.current) {
-                  console.log('[VIDEO_CALL] 🔄🔄🔄 PERIODIC CHECK: Binding remote video!', attendeeId);
-                  try {
-                    // Try to subscribe first
-                    if (typeof audioVideo.startRemoteVideo === 'function') {
-                      audioVideo.startRemoteVideo(attendeeId).catch((e: any) => {
-                        console.log('[VIDEO_CALL] Periodic subscription:', e?.message || 'OK');
-                      });
+            }
+          },
+
+          remoteVideoSourcesDidChange: (videoSources: any[]) => {
+            // Update attendee count
+            if (videoSources) {
+              const remoteCount = videoSources.filter((source: any) => 
+                source.attendeeId && source.attendeeId !== currentAttendeeIdRef.current
+              ).length;
+              setAttendeeCount(remoteCount + 1); // +1 for yourself
+            }
+            
+            if (videoSources && videoSources.length > 0) {
+              for (const source of videoSources) {
+                if (source.attendeeId && source.attendeeId !== currentAttendeeIdRef.current) {
+                  const externalUserId = source.externalUserId;
+                  if (externalUserId) {
+                    setAttendeeEmails(prev => new Map(prev).set(source.attendeeId, externalUserId));
+                    if (!remoteAttendee || remoteAttendee.attendeeId === source.attendeeId) {
+                      setRemoteAttendee({ attendeeId: source.attendeeId, email: externalUserId });
                     }
-                    
-                    // Bind the video
-                    audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
-                    setHasRemoteVideo(true);
-                    console.log('[VIDEO_CALL] ✓✓✓ PERIODIC BIND SUCCESSFUL!');
-                    
-                    // Verify binding
-                    setTimeout(() => {
-                      const videoElement = remoteVideoElementRef.current as HTMLVideoElement;
-                      if (videoElement && videoElement.srcObject) {
-                        console.log('[VIDEO_CALL] ✓✓✓ Periodic bind: Stream confirmed!');
-                      } else {
-                        console.warn('[VIDEO_CALL] Periodic bind: No stream yet');
-                      }
-                    }, 500);
-                  } catch (error: any) {
-                    console.error('[VIDEO_CALL] ✗✗✗ Periodic bind error:', error);
-                    console.error('[VIDEO_CALL] Error details:', {
-                      message: error?.message,
-                      tileId: tileState.tileId,
-                      attendeeId: tileState.attendeeId,
-                    });
                   }
                 }
-                
-                // If tile exists but not active, log it
-                if (!tileState.active) {
-                  console.log('[VIDEO_CALL] 🔄 Periodic check: remote tile exists but not active:', tileState.attendeeId);
-                }
               }
             }
-            
-            // Also check remote video sources
-            try {
-              const remoteSources = audioVideo.getAllRemoteVideoSources?.() || [];
-              if (remoteSources.length > 0) {
-                console.log('[VIDEO_CALL] 🔄 Periodic check: Remote video sources available:', remoteSources.length);
-                for (const source of remoteSources) {
-                  console.log('[VIDEO_CALL] Remote source:', {
-                    attendeeId: source.attendeeId,
-                    isLocal: source.attendeeId === currentUserIdRef.current,
-                  });
-                }
-                // The videoTileDidUpdate observer should handle binding when tiles become active
-              }
-            } catch (e: any) {
-              console.log('[VIDEO_CALL] Periodic check: Error getting remote sources:', e?.message);
-            }
-          } catch (error: any) {
-            console.error('[VIDEO_CALL] Periodic check error:', error);
-          }
-        }, 2000); // Check every 2 seconds
-        
-        // Store interval for cleanup
-        (meetingSessionRef.current as any)._attendeeCheckInterval = attendeeCheckInterval;
+          },
+        };
 
-      } catch (error: any) {
-        console.error('[VIDEO_CALL] ✗✗✗ INITIALIZATION FAILED ✗✗✗', error);
-        if (isMounted) {
-          setCallState('error');
-          setErrorMessage(error?.message || 'Failed to initialize video call');
-        }
+        session.audioVideo.addObserver(observer);
+
+        // Initial video tile binding
+                  setTimeout(() => {
+          const localTile = session.audioVideo.getLocalVideoTile();
+          if (localTile && localVideoRef.current) {
+            const tileState = localTile.state();
+            if (tileState && tileState.active && tileState.tileId !== null) {
+              session.audioVideo.bindVideoElement(tileState.tileId, localVideoRef.current);
+                      }
+                    }
+                  }, 1000);
+
+      } catch (err: any) {
+        console.error('Failed to initialize meeting:', err);
+        setError(err.message || 'Failed to start video call');
+        setIsConnecting(false);
       }
     };
 
-    initializeMeeting();
-
-    // Cleanup
-    return () => {
-      isMounted = false;
-      isMountedRef.current = false;
-      
-      if (meetingSessionRef.current) {
-        const audioVideo = meetingSessionRef.current.audioVideo;
-        const sessionAny = meetingSessionRef.current as any;
-        
+    let countInterval: ReturnType<typeof setInterval> | null = null;
+    
+    initialize().then(() => {
+      // Set up periodic attendee count update after initialization
+      const updateAttendeeCount = () => {
+        if (!meetingSessionRef.current) return;
         try {
-          console.log('[VIDEO_CALL] Cleaning up meeting session...');
-          
-          // Clear intervals
-          if (sessionAny._attendeeCheckInterval) {
-            clearInterval(sessionAny._attendeeCheckInterval);
-          }
-          if (sessionAny._bindInterval) {
-            clearInterval(sessionAny._bindInterval);
-          }
-          
-          // Stop video tile
-          try {
-            audioVideo?.stopLocalVideoTile();
-            if (localVideoElementRef.current) {
-              const localTile = audioVideo?.getLocalVideoTile();
-              if (localTile) {
-                audioVideo?.unbindVideoElement(localTile.state().tileId);
-              }
-              const videoElement = localVideoElementRef.current as HTMLVideoElement;
-              if (videoElement?.srcObject) {
-                const stream = videoElement.srcObject as MediaStream;
-                stream.getTracks().forEach(track => {
-                  track.stop();
-                  console.log('[VIDEO_CALL] Stopped track:', track.kind);
-                });
-                videoElement.srcObject = null;
-              }
+          const session = meetingSessionRef.current;
+          const audioVideoAny = session.audioVideo as any;
+          const realtimeController = audioVideoAny.realtimeController;
+      if (realtimeController) {
+            // Get all attendees from realtime
+            const attendees = realtimeController.attendeePresenceStatus || {};
+            const attendeeIds = Object.keys(attendees).filter(id => 
+              id !== currentAttendeeIdRef.current && attendees[id]?.present
+            );
+            const count = attendeeIds.length + 1; // +1 for yourself
+            setAttendeeCount(count);
+            
+            // If no remote attendees, clear remote attendee
+            if (attendeeIds.length === 0) {
+              setRemoteAttendee(null);
             }
-          } catch (e) {
-            // Ignore video cleanup errors
-          }
-          
-          // Stop and leave
-          audioVideo?.stop();
-          audioVideo?.leave();
-          
-          console.log('[VIDEO_CALL] ✓ Cleanup complete');
-        } catch (error) {
-          console.error('[VIDEO_CALL] Cleanup error:', error);
         }
+      } catch (e) {
+          console.log('Error updating attendee count:', e);
+        }
+      };
+
+      // Update count periodically
+      countInterval = setInterval(updateAttendeeCount, 2000);
+    });
+
+    // Cleanup function
+    return () => {
+      if (countInterval) {
+        clearInterval(countInterval);
+      }
+      if (meetingSessionRef.current) {
+        const session = meetingSessionRef.current;
+        session.audioVideo.stopLocalVideoTile();
+        session.audioVideo.stop();
+        session.audioVideo.leave();
       }
     };
   }, [appointmentId]);
 
-  /**
-   * Set up Chime SDK observers for video tiles and events
-   */
-  const setupObservers = (meetingSession: any) => {
-    console.log('[VIDEO_CALL] Setting up video tile observers...');
-    const audioVideo = meetingSession.audioVideo;
-
-    const observer = {
-      // Called when a video tile is added or updated
-      videoTileDidUpdate: (tileState: any) => {
-        console.log('[VIDEO_CALL] 📹 Video tile updated:', {
-          tileId: tileState.tileId,
-          boundAttendeeId: tileState.boundAttendeeId,
-          boundExternalUserId: tileState.boundExternalUserId,
-          isLocal: tileState.isLocal,
-          localTile: tileState.localTile,
-          active: tileState.active,
-          boundVideoElement: tileState.boundVideoElement ? 'Present' : 'Not bound',
-          videoStreamContentWidth: tileState.videoStreamContentWidth,
-          videoStreamContentHeight: tileState.videoStreamContentHeight,
-        });
-
-        // Handle LOCAL video tile - SIMPLE: bind when active
-        // CRITICAL: Check both isLocal property and localTile property
-        const isLocalTile = tileState.isLocal === true || tileState.localTile === true;
-        if (isLocalTile && tileState.active && localVideoElementRef.current) {
-          if (tileState.boundVideoElement !== localVideoElementRef.current) {
-            try {
-              audioVideo.bindVideoElement(tileState.tileId, localVideoElementRef.current);
-              console.log('[VIDEO_CALL] ✓✓✓ Local video BOUND successfully!');
-            } catch (error: any) {
-              console.error('[VIDEO_CALL] Bind error:', error?.message);
-            }
-          } else {
-            // Already bound - verify stream exists
-            const videoElement = localVideoElementRef.current as HTMLVideoElement;
-            if (videoElement && !videoElement.srcObject) {
-              // Rebind if no stream
-              try {
-                audioVideo.bindVideoElement(tileState.tileId, localVideoElementRef.current);
-                console.log('[VIDEO_CALL] Rebound (no stream detected)');
-              } catch (error: any) {
-                console.error('[VIDEO_CALL] Rebind error:', error?.message);
-              }
-            }
-          }
-        } else if (isLocalTile && !tileState.active && isVideoEnabled) {
-          // Tile exists but not active - this is normal, just wait for it to become active
-          console.log('[VIDEO_CALL] ⏳ Local tile created but not active yet (waiting...)');
-        }
-
-        // Handle REMOTE video tile
-        // CRITICAL: Use boundAttendeeId and check localTile property
-        // Note: isLocalTile is already declared above for local tile check
-        const remoteAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-        
-        if (remoteAttendeeId && !isLocalTile && remoteAttendeeId !== currentUserIdRef.current) {
-          console.log('[VIDEO_CALL] 📹📹📹 REMOTE TILE DETECTED:', {
-            boundAttendeeId: tileState.boundAttendeeId,
-            boundExternalUserId: tileState.boundExternalUserId,
-            attendeeId: remoteAttendeeId,
-            active: tileState.active,
-            tileId: tileState.tileId,
-            hasElement: !!remoteVideoElementRef.current,
-            bound: !!tileState.boundVideoElement,
-            videoStreamContentWidth: tileState.videoStreamContentWidth,
-            videoStreamContentHeight: tileState.videoStreamContentHeight,
-          });
-          
-          // CRITICAL: Always update attendee count when remote tile appears (even if not active)
-          updateAttendeeCount(audioVideo);
-          
-          // CRITICAL: Subscribe to remote video FIRST (before binding)
-          // In Chime SDK v3+, you need to explicitly subscribe to receive remote video
-          if (tileState.active) {
-            console.log('[VIDEO_CALL] 🔔 Attempting to subscribe to remote video for:', remoteAttendeeId);
-            
-            // Try multiple subscription methods depending on SDK version
-            const subscribePromises: Promise<any>[] = [];
-            
-            // Method 1: startRemoteVideo (v3.0+)
-            if (typeof audioVideo.startRemoteVideo === 'function') {
-              const promise1 = audioVideo.startRemoteVideo(remoteAttendeeId)
-                .then(() => {
-                  console.log('[VIDEO_CALL] ✓✓✓ Subscribed via startRemoteVideo:', remoteAttendeeId);
-                })
-                .catch((subError: any) => {
-                  console.log('[VIDEO_CALL] startRemoteVideo result:', subError?.message || 'Subscribed (no error)');
-                });
-              subscribePromises.push(promise1);
-            }
-            
-            // Method 2: subscribeToRemoteVideo (alternative API)
-            if (typeof audioVideo.subscribeToRemoteVideo === 'function') {
-              const promise2 = audioVideo.subscribeToRemoteVideo(remoteAttendeeId)
-                .then(() => {
-                  console.log('[VIDEO_CALL] ✓✓✓ Subscribed via subscribeToRemoteVideo:', remoteAttendeeId);
-                })
-                .catch((subError: any) => {
-                  console.log('[VIDEO_CALL] subscribeToRemoteVideo result:', subError?.message || 'Subscribed (no error)');
-                });
-              subscribePromises.push(promise2);
-            }
-            
-            // Wait for subscription attempts, then bind
-            Promise.allSettled(subscribePromises).then(() => {
-              console.log('[VIDEO_CALL] Subscription attempts completed, attempting to bind...');
-              
-              // Bind if tile is active and element exists
-              if (remoteVideoElementRef.current && tileState.active) {
-                console.log('[VIDEO_CALL] 🔗🔗🔗 BINDING REMOTE VIDEO:', {
-                  attendeeId: remoteAttendeeId,
-                  tileId: tileState.tileId,
-                  active: tileState.active,
-                });
-                
-                try {
-                  // Unbind any existing video first
-                  if (tileState.boundVideoElement && tileState.boundVideoElement !== remoteVideoElementRef.current) {
-                    try {
-                      console.log('[VIDEO_CALL] Unbinding previous video element...');
-                      audioVideo.unbindVideoElement(tileState.tileId);
-                    } catch (unbindError) {
-                      console.log('[VIDEO_CALL] Unbind error (may not be bound):', unbindError);
-                    }
-                  }
-                  
-                  // Bind the video element
-                  if (tileState.boundVideoElement !== remoteVideoElementRef.current) {
-                    console.log('[VIDEO_CALL] Calling bindVideoElement for tile:', tileState.tileId);
-                    audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
-                    setHasRemoteVideo(true);
-                    console.log('[VIDEO_CALL] ✓✓✓✓✓ REMOTE VIDEO BOUND SUCCESSFULLY! ✓✓✓✓✓');
-                    
-                    // Verify binding worked after delays
-                    setTimeout(() => {
-                      const videoElement = remoteVideoElementRef.current as HTMLVideoElement;
-                      if (videoElement) {
-                        console.log('[VIDEO_CALL] Post-bind check:', {
-                          hasSrcObject: !!videoElement.srcObject,
-                          videoWidth: videoElement.videoWidth,
-                          videoHeight: videoElement.videoHeight,
-                          paused: videoElement.paused,
-                          readyState: videoElement.readyState,
-                        });
-                        
-                        if (videoElement.srcObject) {
-                          console.log('[VIDEO_CALL] ✓✓✓ REMOTE VIDEO STREAM CONFIRMED! Stream object exists!');
-                        } else {
-                          console.warn('[VIDEO_CALL] ⚠️ Remote video bound but no stream yet. Waiting...');
-                          // Check again after another delay
-                          setTimeout(() => {
-                            if (videoElement.srcObject) {
-                              console.log('[VIDEO_CALL] ✓✓✓ Stream appeared after delay!');
-                            } else {
-                              console.warn('[VIDEO_CALL] ⚠️ Still no stream after delay');
-                            }
-                          }, 2000);
-                        }
-                      }
-                    }, 500);
-                    
-                    // Also check after longer delay
-                    setTimeout(() => {
-                      const videoElement = remoteVideoElementRef.current as HTMLVideoElement;
-                      if (videoElement && videoElement.srcObject) {
-                        const stream = videoElement.srcObject as MediaStream;
-                        const videoTracks = stream.getVideoTracks();
-                        console.log('[VIDEO_CALL] Video track details:', {
-                          trackCount: videoTracks.length,
-                          trackEnabled: videoTracks[0]?.enabled,
-                          trackReadyState: videoTracks[0]?.readyState,
-                        });
-                      }
-                    }, 2000);
-                  } else {
-                    console.log('[VIDEO_CALL] ✓ Remote video already bound to correct element');
-                    setHasRemoteVideo(true);
-                  }
-                } catch (error: any) {
-                  console.error('[VIDEO_CALL] ✗✗✗ REMOTE BIND ERROR:', error);
-                  console.error('[VIDEO_CALL] Error details:', {
-                    message: error?.message,
-                    stack: error?.stack,
-                    tileId: tileState.tileId,
-                    attendeeId: tileState.attendeeId,
-                  });
-                }
-              } else {
-                if (!remoteVideoElementRef.current) {
-                  console.log('[VIDEO_CALL] ⏳ Remote video element not ready yet, will bind when ready');
-                }
-                if (!tileState.active) {
-                  console.log('[VIDEO_CALL] ⏳ Remote tile not active yet, will bind when active');
-                }
-              }
-            });
-          } else {
-            console.log('[VIDEO_CALL] ⏳ Remote tile exists but not active yet (active=', tileState.active, ')');
-          }
-        }
-      },
-
-      // Called when a video tile is removed
-      videoTileWasRemoved: (tileId: number) => {
-        console.log('[VIDEO_CALL] 📹 Video tile removed:', tileId);
-        
-        // Check if local video was removed - restart if needed
-        if (isVideoEnabled && meetingSessionRef.current) {
-          try {
-            const localVideoTile = audioVideo.getLocalVideoTile();
-            const removedTileState = audioVideo.getAllVideoTiles().get(tileId);
-            
-            // Only restart if the removed tile was actually the local video tile
-            if (!localVideoTile || (removedTileState && removedTileState.isLocal)) {
-              console.log('[VIDEO_CALL] ⚠️ Local video removed, restarting...');
-              
-              // Wait a bit before restarting to avoid rapid on/off cycling
-              setTimeout(async () => {
-                if (isVideoEnabled && meetingSessionRef.current && localVideoElementRef.current) {
-                  try {
-                    await meetingSessionRef.current.audioVideo.startLocalVideoTile();
-                    // Wait for tile to be active, then rebind
-                    setTimeout(() => {
-                      bindLocalVideo(meetingSessionRef.current.audioVideo);
-                    }, 500);
-                  } catch (restartError) {
-                    console.error('[VIDEO_CALL] Failed to restart video tile:', restartError);
-                  }
-                }
-              }, 500);
-            }
-          } catch (error) {
-            console.error('[VIDEO_CALL] Error handling video tile removal:', error);
-          }
-        }
-        
-        // Update attendee count and check if we lost remote video
-        updateAttendeeCount(audioVideo);
-        
-        // If it was a remote tile, update hasRemoteVideo
-        try {
-          const allTiles = audioVideo.getAllVideoTiles();
-          const hasRemote = Array.from(allTiles.values()).some((tile: any) => {
-            return tile.attendeeId && 
-                   tile.attendeeId !== currentUserIdRef.current && 
-                   tile.active;
-          });
-          setHasRemoteVideo(hasRemote);
-        } catch (error) {
-          // Ignore
-        }
-      },
-
-      // Called when audio/video stops
-      audioVideoDidStop: (sessionStatus: any) => {
-        console.log('[VIDEO_CALL] ⏹️ Audio/video stopped:', sessionStatus);
-        setCallState('disconnected');
-        onCallEnd?.();
-      },
-      
-      // Called when remote video sources change (attendance changes)
-      videoStreamsDidChange: (videoStreams: any) => {
-        console.log('[VIDEO_CALL] 📹 Video streams changed:', videoStreams);
-        updateAttendeeCount(audioVideo);
-        
-        // Check for new remote streams and bind them
-        if (videoStreams && Array.isArray(videoStreams)) {
-          for (const stream of videoStreams) {
-            if (stream.attendeeId && stream.attendeeId !== currentUserIdRef.current) {
-              console.log('[VIDEO_CALL] New remote stream detected:', stream.attendeeId);
-              // The videoTileDidUpdate will handle binding
-              updateAttendeeCount(audioVideo);
-            }
-          }
-        }
-      },
-      
-      // Called when remote attendees join/leave
-      remoteVideoSourcesDidChange: (videoSources: any) => {
-        console.log('[VIDEO_CALL] 👥 Remote video sources changed:', videoSources);
-        updateAttendeeCount(audioVideo);
-      },
-      
-      // CRITICAL: Called when attendees join/leave (presence events)
-      // This detects attendees even if they don't have video
-      attendeeDidPresenceChange: (presence: any, attendeeId: string) => {
-        console.log('[VIDEO_CALL] 👥 Attendee presence changed:', {
-          attendeeId,
-          present: presence.present,
-          signalStrength: presence.signalStrength,
-        });
-        updateAttendeeCount(audioVideo);
-      },
-      
-      // Alternative: Called when remote attendee presence is received
-      attendeePresenceDidChange: (presence: any, attendeeId: string) => {
-        console.log('[VIDEO_CALL] 👥👥👥 ATTENDEE PRESENCE CHANGED:', {
-          attendeeId,
-          present: presence.present,
-          isLocal: attendeeId === currentUserIdRef.current,
-        });
-        
-        if (presence.present && attendeeId !== currentUserIdRef.current) {
-          console.log('[VIDEO_CALL] ✓✓✓✓✓ REMOTE ATTENDEE JOINED! ✓✓✓✓✓:', attendeeId);
-          updateAttendeeCount(audioVideo);
-          
-          // CRITICAL: Aggressively try to find and bind their video
-          // Check multiple times with increasing delays (video tile might appear later)
-          const checkAndBindRemoteVideo = (attempt: number, maxAttempts: number = 5) => {
-            console.log('[VIDEO_CALL] 🔍 Checking for remote video (attempt', attempt, '/', maxAttempts, ') for:', attendeeId);
-            
-            try {
-              let allTiles: any;
-              try {
-                const tilesResult = audioVideo.getAllVideoTiles?.();
-                if (tilesResult instanceof Map) {
-                  allTiles = tilesResult;
-                } else if (Array.isArray(tilesResult)) {
-                  allTiles = tilesResult;
-                } else if (tilesResult && typeof tilesResult === 'object') {
-                  allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
-                } else {
-                  allTiles = new Map();
-                }
-              } catch (e) {
-                allTiles = new Map();
-              }
-              
-              const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
-              console.log('[VIDEO_CALL] Total tiles available:', tileArray.length);
-              
-              let foundTile = false;
-              for (const tile of tileArray) {
-                const tileObj = tile as any;
-                
-                // Get tile state using same logic
-                let tileState: any = null;
-                if (typeof tileObj.state === 'function') {
-                  try {
-                    tileState = tileObj.state();
-                  } catch (e) {
-                    // Ignore
-                  }
-                }
-                if (!tileState && tileObj.tileState) {
-                  tileState = tileObj.tileState;
-                }
-                if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
-                  tileState = tileObj;
-                }
-                
-                if (!tileState) continue;
-                
-                // CRITICAL: Use boundAttendeeId and localTile property
-                const tileAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-                const isLocal = tileState.localTile === true;
-                
-                console.log('[VIDEO_CALL] Checking tile:', {
-                  boundAttendeeId: tileState.boundAttendeeId,
-                  boundExternalUserId: tileState.boundExternalUserId,
-                  tileAttendeeId: tileAttendeeId,
-                  matches: tileAttendeeId === attendeeId,
-                  active: tileState.active,
-                  isLocal: isLocal,
-                  localTile: tileState.localTile,
-                });
-                
-                if (tileAttendeeId === attendeeId && !isLocal) {
-                  foundTile = true;
-                  console.log('[VIDEO_CALL] ✓✓✓ Found remote tile for attendee:', {
-                    attendeeId,
-                    tileId: tileState.tileId,
-                    active: tileState.active,
-                    bound: !!tileState.boundVideoElement,
-                  });
-                  
-                  // If tile is active and element exists, bind it
-                  if (tileState.active && remoteVideoElementRef.current) {
-                    console.log('[VIDEO_CALL] 🔗🔗🔗 Binding remote video from presence event...');
-                    try {
-                      // Try to subscribe first
-                      if (typeof audioVideo.startRemoteVideo === 'function') {
-                        audioVideo.startRemoteVideo(attendeeId).catch((e: any) => {
-                          console.log('[VIDEO_CALL] Subscription attempt:', e?.message || 'OK');
-                        });
-                      }
-                      
-                      // Bind the video
-                      audioVideo.bindVideoElement(tileState.tileId, remoteVideoElementRef.current);
-                      setHasRemoteVideo(true);
-                      console.log('[VIDEO_CALL] ✓✓✓✓✓ REMOTE VIDEO BOUND FROM PRESENCE EVENT! ✓✓✓✓✓');
-                      
-                      // Verify after delay
-                      setTimeout(() => {
-                        const videoElement = remoteVideoElementRef.current as HTMLVideoElement;
-                        if (videoElement && videoElement.srcObject) {
-                          console.log('[VIDEO_CALL] ✓✓✓ Stream confirmed after presence binding!');
-                        }
-                      }, 1000);
-                    } catch (bindError: any) {
-                      console.error('[VIDEO_CALL] ✗✗✗ Bind error from presence:', bindError);
-                    }
-                  } else {
-                    console.log('[VIDEO_CALL] Tile found but not active yet or element missing:', {
-                      active: tileState.active,
-                      hasElement: !!remoteVideoElementRef.current,
-                    });
-                    
-                    // If tile exists but not active, check again later
-                    if (attempt < maxAttempts && !tileState.active) {
-                      setTimeout(() => checkAndBindRemoteVideo(attempt + 1, maxAttempts), 1000 * attempt);
-                    }
-                  }
-                  break;
-                }
-              }
-              
-              if (!foundTile && attempt < maxAttempts) {
-                console.log('[VIDEO_CALL] No tile found yet, will retry...');
-                setTimeout(() => checkAndBindRemoteVideo(attempt + 1, maxAttempts), 1000 * attempt);
-              } else if (!foundTile) {
-                console.warn('[VIDEO_CALL] ⚠️ Remote attendee joined but no video tile found after', maxAttempts, 'attempts');
-              }
-            } catch (e: any) {
-              console.error('[VIDEO_CALL] Error checking tiles after presence:', e);
-              if (attempt < maxAttempts) {
-                setTimeout(() => checkAndBindRemoteVideo(attempt + 1, maxAttempts), 1000 * attempt);
-              }
-            }
-          };
-          
-          // Start checking immediately, then retry with delays
-          setTimeout(() => checkAndBindRemoteVideo(1), 100);
-        } else if (!presence.present && attendeeId !== currentUserIdRef.current) {
-          console.log('[VIDEO_CALL] 👋 Remote attendee left:', attendeeId);
-          updateAttendeeCount(audioVideo);
-          
-          // Check if we should clear remote video state
-          setTimeout(() => {
-            try {
-              let allTiles: any;
-              const tilesResult = audioVideo.getAllVideoTiles?.();
-              if (tilesResult instanceof Map) {
-                allTiles = tilesResult;
-              } else if (Array.isArray(tilesResult)) {
-                allTiles = tilesResult;
-              } else if (tilesResult && typeof tilesResult === 'object') {
-                allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
-              } else {
-                allTiles = new Map();
-              }
-              
-              const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
-              let hasAnyRemote = false;
-              
-              for (const tile of tileArray) {
-                const tileObj = tile as any;
-                let tileState: any = null;
-                if (typeof tileObj.state === 'function') {
-                  try {
-                    tileState = tileObj.state();
-                  } catch (e) {
-                    // Ignore
-                  }
-                }
-                if (!tileState && tileObj.tileState) {
-                  tileState = tileObj.tileState;
-                }
-                if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
-                  tileState = tileObj;
-                }
-                
-                if (!tileState) continue;
-                
-                // CRITICAL: Use boundAttendeeId and localTile property
-                const tileAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-                const isLocal = tileState.localTile === true;
-                
-                if (tileAttendeeId && !isLocal && tileAttendeeId !== currentUserIdRef.current && tileState.active) {
-                  hasAnyRemote = true;
-                  break;
-                }
-              }
-              
-              if (!hasAnyRemote) {
-                setHasRemoteVideo(false);
-                console.log('[VIDEO_CALL] No remote attendees left, cleared remote video state');
-              }
-            } catch (e) {
-              console.error('[VIDEO_CALL] Error checking remote tiles:', e);
-            }
-          }, 1000);
-        }
-      },
-    };
-
-    audioVideo.addObserver(observer);
-    console.log('[VIDEO_CALL] ✓ Observers added');
-    
-    // Initial attendee count update
-    updateAttendeeCount(audioVideo);
-    
-    // Also try to get initial remote attendees from realtime controller
-    try {
-      const realtimeController = (meetingSession as any).audioVideo?.realtimeController;
-      if (realtimeController) {
-        // Some SDK versions expose attendees here
-        const remoteAttendees = realtimeController.getAllRemoteAttendeeIds?.() || [];
-        console.log('[VIDEO_CALL] Initial remote attendees from realtime:', remoteAttendees);
-        if (remoteAttendees.length > 0) {
-          updateAttendeeCount(audioVideo);
-        }
-      }
-    } catch (e) {
-      // Ignore if not available
-    }
-  };
-
-  /**
-   * Update attendee count by checking active video tiles
-   */
-  const updateAttendeeCount = (audioVideo: any) => {
-    try {
-      const remoteAttendeeIds = new Set<string>();
-      
-      // Method 1: Check video tiles (for attendees with video)
-      // getAllVideoTiles() can return a Map, array, or object depending on SDK version
-      let allTiles: any;
-      try {
-        const tilesResult = audioVideo.getAllVideoTiles?.();
-        console.log('[VIDEO_CALL] getAllVideoTiles() returned:', {
-          type: typeof tilesResult,
-          isMap: tilesResult instanceof Map,
-          isArray: Array.isArray(tilesResult),
-          keys: tilesResult ? Object.keys(tilesResult) : [],
-          size: tilesResult?.size,
-          length: tilesResult?.length,
-        });
-        
-        // Handle different return types
-        if (tilesResult instanceof Map) {
-          allTiles = tilesResult;
-        } else if (Array.isArray(tilesResult)) {
-          allTiles = tilesResult;
-        } else if (tilesResult && typeof tilesResult === 'object') {
-          // Convert object/iterable to array
-          allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
-        } else {
-          allTiles = new Map();
-        }
-      } catch (e) {
-        console.error('[VIDEO_CALL] Error getting video tiles:', e);
-        allTiles = new Map();
-      }
-      
-      // Convert to array for iteration
-      const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
-      console.log('[VIDEO_CALL] Checking tiles:', tileArray.length, 'total');
-      
-      for (const tile of tileArray) {
-        const tileObj = tile as any;
-        
-        // Try multiple ways to get tile state
-        let tileState: any = null;
-        
-        // Method 1: Check if tile has .state() method
-        if (typeof tileObj.state === 'function') {
-          try {
-            tileState = tileObj.state();
-            console.log('[VIDEO_CALL] Got tile state via .state() method');
-          } catch (e) {
-            console.log('[VIDEO_CALL] .state() method failed:', e);
-          }
-        }
-        
-        // Method 2: Check tileState property
-        if (!tileState && tileObj.tileState) {
-          tileState = tileObj.tileState;
-          console.log('[VIDEO_CALL] Got tile state via .tileState property');
-        }
-        
-        // Method 3: Tile might BE the state object
-        if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
-          tileState = tileObj;
-          console.log('[VIDEO_CALL] Using tile object directly as state');
-        }
-        
-        if (!tileState) {
-          console.warn('[VIDEO_CALL] Could not extract tile state from:', Object.keys(tileObj));
-          continue;
-        }
-        
-        console.log('[VIDEO_CALL] Tile raw keys:', Object.keys(tileObj));
-        console.log('[VIDEO_CALL] Tile state keys:', Object.keys(tileState));
-        
-        // Log tile state properties without circular references
-        const safeTileState = {
-          tileId: tileState.tileId,
-          localTile: tileState.localTile,
-          localTileStarted: tileState.localTileStarted,
-          active: tileState.active,
-          boundAttendeeId: tileState.boundAttendeeId,
-          boundExternalUserId: tileState.boundExternalUserId,
-          hasBoundVideoElement: !!tileState.boundVideoElement,
-          videoStreamContentWidth: tileState.videoStreamContentWidth,
-          videoStreamContentHeight: tileState.videoStreamContentHeight,
-          streamId: tileState.streamId,
-          groupId: tileState.groupId,
-        };
-        console.log('[VIDEO_CALL] Safe tile state:', safeTileState);
-        
-        // CRITICAL: Chime SDK uses boundAttendeeId, not attendeeId!
-        // CRITICAL: Chime SDK uses boundAttendeeId, not attendeeId!
-        const attendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-        // Use localTile property to identify local tiles
-        const isLocal = tileState.localTile === true;
-        
-        console.log('[VIDEO_CALL] Tile parsed:', {
-          tileId: tileState.tileId,
-          boundAttendeeId: tileState.boundAttendeeId,
-          boundExternalUserId: tileState.boundExternalUserId,
-          attendeeId: attendeeId,
-          isLocal: isLocal,
-          localTile: tileState.localTile,
-          active: tileState.active,
-          hasBoundVideoElement: !!tileState.boundVideoElement,
-        });
-        
-        // Skip local tiles - check both localTile property and current user
-        if (isLocal || (attendeeId && attendeeId === currentUserIdRef.current)) {
-          console.log('[VIDEO_CALL] Skipping local tile:', { isLocal, attendeeId, currentUser: currentUserIdRef.current });
-          continue;
-        }
-        
-        // If it's a remote tile, add to set
-        if (attendeeId && attendeeId !== currentUserIdRef.current) {
-          console.log('[VIDEO_CALL] ✓✓✓ Found remote attendee:', attendeeId);
-          remoteAttendeeIds.add(attendeeId);
-        }
-      }
-      
-      // Method 2: Check remote video sources
-      const allAttendees = audioVideo.getAllRemoteVideoSources?.() || [];
-      console.log('[VIDEO_CALL] Remote video sources:', allAttendees.length);
-      for (const source of allAttendees) {
-        if (source?.attendeeId && source.attendeeId !== currentUserIdRef.current) {
-          remoteAttendeeIds.add(source.attendeeId);
-        }
-      }
-      
-      // Method 3: Check realtime controller for all attendees (including those without video)
-      try {
-        const realtimeController = audioVideo.realtimeController || (audioVideo as any).realtimeController;
-        if (realtimeController) {
-          const allRemoteIds = realtimeController.getAllRemoteAttendeeIds?.() || [];
-          console.log('[VIDEO_CALL] Remote attendees from realtime:', allRemoteIds.length);
-          console.log('[VIDEO_CALL] Remote attendee IDs:', allRemoteIds);
-          for (const attendeeId of allRemoteIds) {
-            if (attendeeId && attendeeId !== currentUserIdRef.current) {
-              remoteAttendeeIds.add(attendeeId);
-            }
-          }
-        } else {
-          console.log('[VIDEO_CALL] No realtime controller available');
-        }
-      } catch (e) {
-        console.log('[VIDEO_CALL] Realtime controller error:', e);
-      }
-      
-      const remoteCount = remoteAttendeeIds.size;
-      const total = 1 + remoteCount; // Yourself + remote attendees
-      
-      setAttendeeCount(total);
-      
-      // Update hasRemoteVideo based on active remote tiles
-      // IMPORTANT: Check tileState property correctly
-      let hasActiveRemoteTile = false;
-      const checkTiles = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
-      for (const tile of checkTiles) {
-        const tileObj = tile as any;
-        
-        // Get tile state using same logic as above
-        let tileState: any = null;
-        if (typeof tileObj.state === 'function') {
-          try {
-            tileState = tileObj.state();
-          } catch (e) {
-            // Ignore
-          }
-        }
-        if (!tileState && tileObj.tileState) {
-          tileState = tileObj.tileState;
-        }
-        if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
-          tileState = tileObj;
-        }
-        
-        if (!tileState) continue;
-        
-        // CRITICAL: Use boundAttendeeId, not attendeeId
-        const attendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-        const isLocal = tileState.localTile === true;
-        
-        if (attendeeId && 
-            !isLocal &&
-            attendeeId !== currentUserIdRef.current && 
-            tileState.active) {
-          hasActiveRemoteTile = true;
-          console.log('[VIDEO_CALL] Found active remote tile:', {
-            attendeeId: attendeeId,
-            boundAttendeeId: tileState.boundAttendeeId,
-            tileId: tileState.tileId,
-            bound: !!tileState.boundVideoElement,
-          });
-          break;
-        }
-      }
-      
-      console.log('[VIDEO_CALL] hasActiveRemoteTile:', hasActiveRemoteTile);
-      
-      // Also check if remote video element has a stream
-      if (hasActiveRemoteTile && remoteVideoElementRef.current) {
-        const videoElement = remoteVideoElementRef.current as HTMLVideoElement;
-        if (videoElement.srcObject) {
-          const stream = videoElement.srcObject as MediaStream;
-          const videoTracks = stream.getVideoTracks();
-          if (videoTracks.length > 0 && videoTracks[0].readyState === 'live') {
-            console.log('[VIDEO_CALL] ✓ Remote video stream is live!');
-          } else {
-            console.log('[VIDEO_CALL] Remote video element has stream but tracks not live yet');
-          }
-        }
-      }
-      
-      setHasRemoteVideo(hasActiveRemoteTile);
-      
-      console.log('[VIDEO_CALL] 👥 Attendee count updated:', { 
-        total, 
-        remote: remoteCount,
-        yourself: 1,
-        waiting: total < 2,
-        remoteAttendeeIds: Array.from(remoteAttendeeIds),
-        hasActiveRemoteVideo: hasActiveRemoteTile,
-      });
-      
-      // Log if someone joined but we're still showing waiting message
-      if (remoteCount > 0 && total >= 2 && !hasRemoteVideo) {
-        console.log('[VIDEO_CALL] ⚠️ Remote attendee joined but no video yet:', Array.from(remoteAttendeeIds));
-      }
-    } catch (error) {
-      console.error('[VIDEO_CALL] Error updating attendee count:', error);
-    }
-  };
-
-  /**
-   * Enable audio and video
-   */
-  const enableMedia = async (meetingSession: any) => {
-    const audioVideo = meetingSession.audioVideo;
-    const deviceController = deviceControllerRef.current;
-    
-    // Audio is automatically enabled when session starts
-    
-    // Enable video
-    if (isVideoEnabled) {
-      console.log('[VIDEO_CALL] 📹 Enabling video...');
-      
-      try {
-        // Wait for video element to exist
-        for (let i = 0; i < 10; i++) {
-          if (localVideoElementRef.current) break;
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-        
-        if (!localVideoElementRef.current) {
-          console.error('[VIDEO_CALL] Video element not found');
-          return;
-        }
-        
-        // Get video device and select it
-        // In v3.0+, listVideoInputDevices is on audioVideo facade
-        try {
-          const devices = await audioVideo.listVideoInputDevices();
-          console.log('[VIDEO_CALL] Available video devices:', devices.length);
-          if (devices.length > 0) {
-            // Use startVideoInput (v3.0+) instead of chooseVideoInputDevice (v2.x)
-            await audioVideo.startVideoInput(devices[0].deviceId);
-            console.log('[VIDEO_CALL] ✓ Video device selected:', devices[0].label);
-          }
-        } catch (deviceError: any) {
-          console.warn('[VIDEO_CALL] Device selection error:', deviceError?.message);
-          // Continue anyway - video might still work with default device
-        }
-        
-        // CRITICAL: Only start video tile when session is ready
-        // The observer will handle binding when tile becomes active
-        console.log('[VIDEO_CALL] Starting video tile...');
-        await audioVideo.startLocalVideoTile();
-        console.log('[VIDEO_CALL] ✓ Video tile started');
-        
-        // Try immediate bind, but observer will handle binding when tile becomes active
-        // The tile needs time to become active after session is connected
-        setTimeout(() => {
-          bindLocalVideo(audioVideo);
-        }, 500);
-        
-      } catch (error: any) {
-        console.error('[VIDEO_CALL] Video error:', error?.message);
-      }
-    }
-  };
-
-  /**
-   * Bind local video to the video element - SIMPLE version
-   */
-  const bindLocalVideo = (audioVideo: any) => {
-    if (!localVideoElementRef.current) {
-      console.log('[VIDEO_CALL] Cannot bind: no video element');
-      return false;
-    }
-    
-    try {
-      const tile = audioVideo.getLocalVideoTile();
-      if (!tile) {
-        console.log('[VIDEO_CALL] Cannot bind: no local video tile');
-        return false;
-      }
-      
-      const tileState = (tile as any).tileState || tile.state();
-      console.log('[VIDEO_CALL] Attempting to bind local video:', {
-        tileId: tileState?.tileId,
-        active: tileState?.active,
-        boundTo: tileState?.boundVideoElement ? 'Another element' : 'Nothing',
-      });
-      
-      // Try binding even if not active yet - observer will re-check
-      if (tileState && tileState.boundVideoElement !== localVideoElementRef.current) {
-        audioVideo.bindVideoElement(tileState.tileId, localVideoElementRef.current);
-        console.log('[VIDEO_CALL] ✓ Video bound successfully');
-      } else {
-        console.log('[VIDEO_CALL] Already bound to this element');
-      }
-      return true;
-    } catch (error) {
-      console.error('[VIDEO_CALL] Bind error:', error);
-      return false;
-    }
-  };
-
-  /**
-   * Toggle audio mute/unmute
-   */
   const toggleAudio = () => {
     if (!meetingSessionRef.current) return;
-    
     const newState = !isAudioEnabled;
     setIsAudioEnabled(newState);
-    
-    const audioVideo = meetingSessionRef.current.audioVideo;
     if (newState) {
-      audioVideo.realtimeUnmuteLocalAudio();
-      console.log('[VIDEO_CALL] 🔊 Audio unmuted');
+      meetingSessionRef.current.audioVideo.realtimeUnmuteLocalAudio();
     } else {
-      audioVideo.realtimeMuteLocalAudio();
-      console.log('[VIDEO_CALL] 🔇 Audio muted');
+      meetingSessionRef.current.audioVideo.realtimeMuteLocalAudio();
     }
   };
 
-  /**
-   * Toggle video on/off
-   */
   const toggleVideo = async () => {
     if (!meetingSessionRef.current) return;
-    
     const newState = !isVideoEnabled;
     setIsVideoEnabled(newState);
-    
-    const audioVideo = meetingSessionRef.current.audioVideo;
-    
+    const session = meetingSessionRef.current;
     if (newState) {
-      console.log('[VIDEO_CALL] 📹 Turning video ON');
-      try {
-        await audioVideo.startLocalVideoTile();
-        setTimeout(() => bindLocalVideo(audioVideo), 500);
-      } catch (error: any) {
-        console.error('[VIDEO_CALL] ✗ Error starting video:', error?.message);
-      }
-    } else {
-      console.log('[VIDEO_CALL] 📹 Turning video OFF');
-      try {
-        audioVideo.stopLocalVideoTile();
-        if (localVideoElementRef.current) {
-          audioVideo.unbindVideoElement(1);
-          localVideoElementRef.current.srcObject = null;
+      await session.audioVideo.startLocalVideoTile();
+      setTimeout(() => {
+        const localTile = session.audioVideo.getLocalVideoTile();
+        if (localTile && localVideoRef.current) {
+          const tileState = localTile.state();
+          if (tileState && tileState.tileId !== null) {
+            session.audioVideo.bindVideoElement(tileState.tileId, localVideoRef.current);
+          }
         }
-      } catch (error: any) {
-        console.error('[VIDEO_CALL] ✗ Error stopping video:', error?.message);
-      }
+      }, 300);
+    } else {
+      session.audioVideo.stopLocalVideoTile();
     }
   };
 
-  /**
-   * End the call - PROPERLY clean up everything
-   */
-  const endCall = async () => {
-    console.log('[VIDEO_CALL] 📞 Ending call...');
-    
+  const endCall = () => {
     if (meetingSessionRef.current) {
-      const audioVideo = meetingSessionRef.current.audioVideo;
-      const sessionAny = meetingSessionRef.current as any;
-      
-      // Clear all intervals first
-      if (sessionAny._attendeeCheckInterval) {
-        clearInterval(sessionAny._attendeeCheckInterval);
-        console.log('[VIDEO_CALL] Cleared attendee check interval');
-      }
-      if (sessionAny._bindInterval) {
-        clearInterval(sessionAny._bindInterval);
-        console.log('[VIDEO_CALL] Cleared bind interval');
-      }
-      
-      try {
-        // Stop local video tile first
-        if (isVideoEnabled) {
-          console.log('[VIDEO_CALL] Stopping local video tile...');
-          try {
-            audioVideo?.stopLocalVideoTile();
-            
-            // Unbind video element
-            if (localVideoElementRef.current) {
-              const localTile = audioVideo?.getLocalVideoTile();
-              if (localTile) {
-                try {
-                  audioVideo?.unbindVideoElement(localTile.state().tileId);
-                } catch (e) {
-                  // Ignore
-                }
-              }
-              
-              // Stop all media tracks from the video element
-              const videoElement = localVideoElementRef.current as HTMLVideoElement;
-              if (videoElement && videoElement.srcObject) {
-                const stream = videoElement.srcObject as MediaStream;
-                stream.getTracks().forEach(track => {
-                  track.stop();
-                  console.log('[VIDEO_CALL] Stopped media track:', track.kind);
-                });
-                videoElement.srcObject = null;
-              }
-            }
-          } catch (videoError) {
-            console.error('[VIDEO_CALL] Error stopping video:', videoError);
-          }
-        }
-        
-        // Stop audio
-        try {
-          audioVideo?.realtimeMuteLocalAudio();
-        } catch (e) {
-          // Ignore
-        }
-        
-        // Stop and leave the meeting
-        console.log('[VIDEO_CALL] Stopping audio/video session...');
-        await audioVideo?.stop();
-        console.log('[VIDEO_CALL] Leaving meeting...');
-        await audioVideo?.leave();
-        console.log('[VIDEO_CALL] ✓ Meeting ended cleanly');
-        
-      } catch (error) {
-        console.error('[VIDEO_CALL] Error ending call:', error);
-      }
+      const session = meetingSessionRef.current;
+      session.audioVideo.stopLocalVideoTile();
+      session.audioVideo.stop();
+      session.audioVideo.leave();
     }
-    
-    // Clear refs
-    meetingSessionRef.current = null;
-    localVideoElementRef.current = null;
-    remoteVideoElementRef.current = null;
-    
-    // Update state
-    setCallState('disconnected');
-    setIsVideoEnabled(false);
-    setIsAudioEnabled(false);
-    setAttendeeCount(0);
-    setHasRemoteVideo(false);
-    
-    // Call the callback
     onCallEnd?.();
   };
 
-  // Render error state
-  if (callState === 'error') {
+  if (error) {
     return (
       <ThemedView style={styles.container}>
-        <ThemedText style={styles.errorText}>{errorMessage || 'An error occurred'}</ThemedText>
+        <ThemedText style={styles.errorText}>{error}</ThemedText>
         <TouchableOpacity style={styles.button} onPress={endCall}>
           <Text style={styles.buttonText}>Close</Text>
         </TouchableOpacity>
@@ -2211,299 +435,208 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
     );
   }
 
-  // Render disconnected state
-  if (callState === 'disconnected') {
+  if (Platform.OS !== 'web') {
     return (
       <ThemedView style={styles.container}>
-        <ThemedText style={styles.statusText}>Call ended</ThemedText>
+        <ThemedText>Video calling is only available on web</ThemedText>
       </ThemedView>
     );
   }
 
-  // Render for web platform
-  if (Platform.OS === 'web') {
-    // Show waiting overlay if:
-    // - Less than 2 attendees (only 1 person = yourself)
-    // - OR no remote video yet
-    const isWaitingForOthers = attendeeCount < 2 || !hasRemoteVideo;
-    const otherParticipantsNeeded = Math.max(0, 2 - attendeeCount); // How many OTHER people needed
-    
-    console.log('[VIDEO_CALL] 👥 Render state:', {
-      attendeeCount,
-      hasRemoteVideo,
-      isWaitingForOthers,
-      otherParticipantsNeeded,
-      callState
-    });
-
     return (
       <View style={styles.container}>
-        {/* Main video container */}
-        <View style={styles.videoContainer}>
-          {/* Remote video (main view) */}
+      {/* Remote Video (Main View) */}
           <div style={styles.remoteVideoContainer}>
             <video
-              id="remote-video"
+          ref={(el) => {
+            if (el) remoteVideoRef.current = el;
+          }}
               autoPlay
               playsInline
               style={styles.remoteVideo}
-              ref={(element) => {
-                if (element && remoteVideoElementRef.current !== element) {
-                  remoteVideoElementRef.current = element;
-                  console.log('[VIDEO_CALL] 🎥 Remote video element mounted!');
-                  
-                  // Event listeners for debugging
-                  element.addEventListener('loadedmetadata', () => {
-                    console.log('[VIDEO_CALL] ✓✓✓ Remote video metadata loaded!', {
-                      width: element.videoWidth,
-                      height: element.videoHeight,
-                    });
-                  });
-                  
-                  element.addEventListener('play', () => {
-                    console.log('[VIDEO_CALL] ✓✓✓ Remote video started PLAYING!');
-                  });
-                  
-                  element.addEventListener('playing', () => {
-                    console.log('[VIDEO_CALL] ✓✓✓ Remote video is PLAYING!');
-                    setHasRemoteVideo(true);
-                  });
-                  
-                  element.addEventListener('error', (e) => {
-                    console.error('[VIDEO_CALL] ✗✗✗ Remote video ERROR:', e);
-                  });
-                  
-                  // Try to bind any existing remote video
-                  if (meetingSessionRef.current) {
-                    setTimeout(() => {
-                      const audioVideo = meetingSessionRef.current.audioVideo;
-                      const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
-                      for (const tile of Array.from(allTiles.values())) {
-                        const tileState = tile as any;
-                        if (tileState.attendeeId && 
-                            tileState.attendeeId !== currentUserIdRef.current && 
-                            tileState.active &&
-                            tileState.boundVideoElement !== element) {
-                          try {
-                            audioVideo.bindVideoElement(tileState.tileId, element);
-                            console.log('[VIDEO_CALL] ✓ Bound remote video on element mount');
-                          } catch (e) {
-                            console.error('[VIDEO_CALL] Bind error on mount:', e);
-                          }
-                        }
-                      }
-                    }, 300);
-                  }
-                }
-              }}
-            />
-            
-            {/* Waiting overlay */}
-            {isWaitingForOthers && (
-              <View style={styles.waitingOverlay}>
-                <View style={styles.waitingCard}>
+        />
+        
+        {/* Remote Attendee Email Overlay */}
+        {remoteAttendee && (
+          <View style={styles.emailOverlay}>
+            <Text style={styles.emailText}>{remoteAttendee.email}</Text>
+          </View>
+        )}
+
+        {/* Loading/Connecting Overlay */}
+        {isConnecting && (
+          <View style={styles.overlay}>
                   <ActivityIndicator size="large" color="#fff" />
-                  <ThemedText style={styles.waitingText}>
-                    {requestingPermissions 
-                      ? 'Requesting camera and microphone access...'
-                      : attendeeCount < 2
-                        ? `Waiting for ${otherParticipantsNeeded} other participant${otherParticipantsNeeded !== 1 ? 's' : ''} to join...`
-                        : 'Connecting...'}
-                  </ThemedText>
-                </View>
+            <Text style={styles.overlayText}>Connecting...</Text>
+              </View>
+            )}
+
+        {/* Waiting for Participants Overlay */}
+        {!isConnecting && !remoteAttendee && attendeeCount < expectedAttendees && (
+              <View style={styles.waitingOverlay}>
+                  <ActivityIndicator size="large" color="#fff" />
+            <Text style={styles.waitingText}>Waiting for {expectedAttendees - attendeeCount} other participant{expectedAttendees - attendeeCount !== 1 ? 's' : ''}...</Text>
+            <Text style={styles.waitingSubtext}>Currently {attendeeCount} of {expectedAttendees} in the room</Text>
               </View>
             )}
           </div>
 
-          {/* LOCAL VIDEO - Green box on bottom right */}
+      {/* Local Video (Bottom Right) */}
+      {isVideoEnabled && (
           <div style={styles.localVideoContainer}>
-            {/* Label */}
-            <View style={styles.localVideoLabel}>
-              <Text style={styles.localVideoLabelText}>LOCAL VIDEO</Text>
-            </View>
-            
-            {/* Video element */}
-            {isVideoEnabled ? (
               <video
-                id="local-video"
+            ref={(el) => {
+              if (el) localVideoRef.current = el;
+            }}
                 autoPlay
                 playsInline
                 muted
                 style={styles.localVideo}
-                ref={(element) => {
-                  if (element && localVideoElementRef.current !== element) {
-                    localVideoElementRef.current = element;
-                    console.log('[VIDEO_CALL] 🎥 Video element mounted!');
-                    
-                    // Event listeners for debugging
-                    element.addEventListener('loadedmetadata', () => {
-                      console.log('[VIDEO_CALL] ✓✓✓ Video metadata loaded!', {
-                        width: element.videoWidth,
-                        height: element.videoHeight,
-                      });
-                    });
-                    
-                    element.addEventListener('play', () => {
-                      console.log('[VIDEO_CALL] ✓✓✓ Video started PLAYING!');
-                    });
-                    
-                    element.addEventListener('playing', () => {
-                      console.log('[VIDEO_CALL] ✓✓✓ Video is PLAYING!');
-                    });
-                    
-                    element.addEventListener('error', (e) => {
-                      console.error('[VIDEO_CALL] ✗✗✗ Video ERROR:', e);
-                    });
-                    
-                    // Try binding immediately
-                    if (meetingSessionRef.current) {
-                      setTimeout(() => {
-                        bindLocalVideo(meetingSessionRef.current.audioVideo);
-                      }, 300);
-                    }
-                  }
-                }}
-              />
-            ) : (
-              <View style={styles.localVideoPlaceholder}>
-                <Text style={styles.localVideoPlaceholderText}>📹</Text>
+          />
+          <View style={styles.localVideoLabel}>
+            <Text style={styles.localVideoLabelText}>You</Text>
               </View>
-            )}
           </div>
-        </View>
+      )}
 
-        {/* Call controls */}
+      {/* Controls */}
         <View style={styles.controls}>
           <TouchableOpacity
-            style={[styles.controlButton, !isAudioEnabled && styles.controlButtonDisabled]}
+          style={[styles.controlButton, !isAudioEnabled && styles.controlButtonMuted]}
             onPress={toggleAudio}
           >
             <Ionicons
-              name={isAudioEnabled ? 'mic-outline' : 'mic-off-outline'}
+            name={isAudioEnabled ? 'mic' : 'mic-off'}
               size={24}
               color="#fff"
             />
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={[styles.controlButton, !isVideoEnabled && styles.controlButtonDisabled]}
+          style={[styles.controlButton, !isVideoEnabled && styles.controlButtonMuted]}
             onPress={toggleVideo}
           >
             <Ionicons
-              name={isVideoEnabled ? 'videocam-outline' : 'videocam-off-outline'}
+            name={isVideoEnabled ? 'videocam' : 'videocam-off'}
               size={24}
               color="#fff"
             />
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={[styles.controlButton, styles.endCallButton]}
+          style={[styles.controlButton, styles.endButton]}
             onPress={endCall}
           >
-            <Ionicons
-              name="close-circle-outline"
-              size={24}
-              color="#fff"
-            />
+          <Ionicons name="call" size={24} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
-    );
-  }
-
-  // Non-web platforms
-  return (
-    <ThemedView style={styles.container}>
-      <ThemedText style={styles.statusText}>Video calling is only available on web</ThemedText>
-    </ThemedView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
     backgroundColor: '#000',
   },
-  statusText: {
-    fontSize: 16,
-    color: '#fff',
-    textAlign: 'center',
-  },
-  errorText: {
-    fontSize: 16,
-    color: '#ff4444',
-    textAlign: 'center',
-    marginBottom: 24,
-  },
-  videoContainer: {
-    flex: 1,
-    width: '100%',
-    position: 'relative',
-    overflow: 'visible' as any,
-  } as any,
   remoteVideoContainer: {
     width: '100%',
     height: '100%',
+    position: 'relative',
     backgroundColor: '#000',
-  },
+  } as any,
   remoteVideo: {
     width: '100%',
     height: '100%',
     objectFit: 'cover',
   } as any,
-  // LOCAL VIDEO CONTAINER - Green box
+  emailOverlay: {
+    position: 'absolute',
+    top: 20,
+    left: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    zIndex: 10,
+  },
+  emailText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 5,
+  },
+  overlayText: {
+    color: '#fff',
+    marginTop: 16,
+    fontSize: 16,
+  },
+  waitingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 6,
+  },
+  waitingText: {
+    color: '#fff',
+    marginTop: 16,
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  waitingSubtext: {
+    color: 'rgba(255, 255, 255, 0.7)',
+    marginTop: 8,
+    fontSize: 14,
+    textAlign: 'center',
+  },
   localVideoContainer: {
-    position: 'fixed' as any,
+    position: 'fixed',
     bottom: 100,
     right: 20,
     width: 200,
-    height: 250,
+    height: 150,
     borderRadius: 12,
-    overflow: 'hidden' as any,
-    borderWidth: 5,
+    overflow: 'hidden',
+    borderWidth: 3,
     borderColor: '#00ff00',
-    backgroundColor: '#00ff00',
-    shadowColor: '#00ff00',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 20,
-    zIndex: 99999,
-    display: 'block' as any,
-    boxShadow: '0 0 30px #00ff00' as any,
+    backgroundColor: '#000',
+    zIndex: 999,
   } as any,
-  localVideoLabel: {
-    position: 'absolute' as any,
-    top: 5,
-    left: 5,
-    right: 5,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    padding: 4,
-    borderRadius: 4,
-    zIndex: 100,
-  },
-  localVideoLabelText: {
-    color: '#fff',
-    fontSize: 10,
-    textAlign: 'center',
-    fontWeight: 'bold',
-  },
   localVideo: {
     width: '100%',
     height: '100%',
     objectFit: 'cover',
-    backgroundColor: '#000',
   } as any,
-  localVideoPlaceholder: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#222',
-    justifyContent: 'center',
-    alignItems: 'center',
+  localVideoLabel: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    zIndex: 1000,
   },
-  localVideoPlaceholderText: {
-    fontSize: 48,
+  localVideoLabelText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 'bold',
   },
   controls: {
     position: 'absolute',
@@ -2514,8 +647,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 16,
-    paddingHorizontal: 20,
-    zIndex: 10,
+    zIndex: 100,
   },
   controlButton: {
     width: 56,
@@ -2527,10 +659,10 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#fff',
   },
-  controlButtonDisabled: {
+  controlButtonMuted: {
     backgroundColor: 'rgba(255, 0, 0, 0.6)',
   },
-  endCallButton: {
+  endButton: {
     backgroundColor: 'rgba(255, 0, 0, 0.8)',
   },
   button: {
@@ -2545,30 +677,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  waitingOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
-  },
-  waitingCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    padding: 24,
-    borderRadius: 12,
-    alignItems: 'center',
-    minWidth: 280,
-    backdropFilter: 'blur(10px)',
-  },
-  waitingText: {
-    marginTop: 16,
-    fontSize: 18,
-    color: '#fff',
+  errorText: {
+    fontSize: 16,
+    color: '#ff4444',
     textAlign: 'center',
-    fontWeight: '500',
+    marginBottom: 24,
   },
 });
