@@ -1261,10 +1261,10 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
 
         // Handle REMOTE video tile
         // CRITICAL: Use boundAttendeeId and check localTile property
+        // Note: isLocalTile is already declared above for local tile check
         const remoteAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
-        const isRemoteTileForRemote = tileState.localTile !== true && !isLocalTile;
         
-        if (remoteAttendeeId && isRemoteTileForRemote && remoteAttendeeId !== currentUserIdRef.current) {
+        if (remoteAttendeeId && !isLocalTile && remoteAttendeeId !== currentUserIdRef.current) {
           console.log('[VIDEO_CALL] 📹📹📹 REMOTE TILE DETECTED:', {
             boundAttendeeId: tileState.boundAttendeeId,
             boundExternalUserId: tileState.boundExternalUserId,
