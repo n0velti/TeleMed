@@ -1410,8 +1410,8 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       console.log('[VIDEO_CALL] Checking tiles:', tileArray.length, 'total');
       for (const tile of tileArray) {
         const tileObj = tile as any;
-        // Try both .state() and direct access
-        const tileState = typeof tileObj.state === 'function' ? tileObj.state() : tileObj;
+        // Tile state is in .tileState property, not .state() method
+        const tileState = tileObj.tileState || (typeof tileObj.state === 'function' ? tileObj.state() : tileObj);
         console.log('[VIDEO_CALL] Tile raw:', Object.keys(tileObj));
         console.log('[VIDEO_CALL] Tile:', {
           tileId: tileState?.tileId,
@@ -1558,15 +1558,15 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         return false;
       }
       
-      const tileState = tile.state();
+      const tileState = (tile as any).tileState || tile.state();
       console.log('[VIDEO_CALL] Attempting to bind local video:', {
-        tileId: tileState.tileId,
-        active: tileState.active,
-        boundTo: tileState.boundVideoElement ? 'Another element' : 'Nothing',
+        tileId: tileState?.tileId,
+        active: tileState?.active,
+        boundTo: tileState?.boundVideoElement ? 'Another element' : 'Nothing',
       });
       
       // Try binding even if not active yet - observer will re-check
-      if (tileState.boundVideoElement !== localVideoElementRef.current) {
+      if (tileState && tileState.boundVideoElement !== localVideoElementRef.current) {
         audioVideo.bindVideoElement(tileState.tileId, localVideoElementRef.current);
         console.log('[VIDEO_CALL] ✓ Video bound successfully');
       } else {
