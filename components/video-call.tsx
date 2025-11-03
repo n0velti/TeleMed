@@ -217,10 +217,13 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
         await session.audioVideo.start();
         setIsConnecting(false);
 
-        // Enable video
+        // Enable video automatically
         const devices = await session.audioVideo.listVideoInputDevices();
         if (devices.length > 0) {
           await session.audioVideo.startVideoInput(devices[0].deviceId);
+          // Start local video tile to show your video
+          await session.audioVideo.startLocalVideoTile();
+          console.log('[VIDEO_CALL] Local video started automatically');
         }
 
         // Set up observers
@@ -251,23 +254,51 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
           },
 
       attendeeDidPresenceChange: (presence: any, attendeeId: string) => {
-            // Update attendee count
+            console.log('[VIDEO_CALL] Attendee presence changed:', { 
+              attendeeId, 
+              present: presence.present,
+              isSelf: attendeeId === currentAttendeeIdRef.current 
+            });
+            
+            // Update attendee count using realtime controller
             const audioVideoAny = session.audioVideo as any;
             const realtimeController = audioVideoAny.realtimeController;
             if (realtimeController) {
               try {
-                // Get all current attendees
-                const currentAttendees = realtimeController.getAllRemoteVideoSources?.() || [];
-                const remoteCount = currentAttendees.filter((a: any) => 
-                  a.attendeeId !== currentAttendeeIdRef.current
+                // Get all attendees from presence status
+                const attendees = realtimeController.attendeePresenceStatus || {};
+                const presentAttendees = Object.keys(attendees).filter(id => 
+                  attendees[id]?.present === true
+                );
+                const remoteCount = presentAttendees.filter(id => 
+                  id !== currentAttendeeIdRef.current
                 ).length;
-                setAttendeeCount(remoteCount + 1); // +1 for yourself
-          } catch (e) {
+                const totalCount = remoteCount + 1; // +1 for yourself
+                setAttendeeCount(totalCount);
+                
+                console.log('[VIDEO_CALL] Presence update - Total:', totalCount, 'Remote:', remoteCount);
+                
+                // Also try to get from video sources
+                try {
+                  const videoSources = realtimeController.getAllRemoteVideoSources?.() || [];
+                  if (videoSources.length > 0) {
+                    const remoteFromSources = videoSources.filter((a: any) => 
+                      a.attendeeId && a.attendeeId !== currentAttendeeIdRef.current
+                    ).length;
+                    if (remoteFromSources > remoteCount) {
+                      setAttendeeCount(remoteFromSources + 1);
+                    }
+                  }
+                } catch (e) {
+                  // getAllRemoteVideoSources not available, continue
+                }
+              } catch (e) {
+                console.error('[VIDEO_CALL] Error in attendeeDidPresenceChange:', e);
                 // Fallback: count based on presence
                 if (presence.present && attendeeId !== currentAttendeeIdRef.current) {
                   setAttendeeCount(prev => Math.max(prev, 2)); // At least 2 if someone else is present
                 } else if (!presence.present) {
-                  setAttendeeCount(1); // Only yourself
+                  setAttendeeCount(prev => Math.max(1, prev - 1)); // Decrement if someone left
                 }
               }
             }
@@ -277,16 +308,21 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
               try {
                 const audioVideoAny = session.audioVideo as any;
                 const realtimeController = audioVideoAny.realtimeController;
-      if (realtimeController) {
+                if (realtimeController) {
                   const externalUserId = realtimeController.getAttendeeExternalUserId?.(attendeeId);
                   if (externalUserId) {
                     setAttendeeEmails(prev => new Map(prev).set(attendeeId, externalUserId));
                     setRemoteAttendee({ attendeeId, email: externalUserId });
-        }
-      }
-    } catch (e) {
-                console.log('Could not get externalUserId:', e);
+                    console.log('[VIDEO_CALL] Remote attendee detected:', { attendeeId, email: externalUserId });
+                  }
+                }
+              } catch (e) {
+                console.log('[VIDEO_CALL] Could not get externalUserId:', e);
               }
+            } else if (!presence.present && remoteAttendee?.attendeeId === attendeeId) {
+              // Remote attendee left
+              setRemoteAttendee(null);
+              console.log('[VIDEO_CALL] Remote attendee left:', attendeeId);
             }
           },
 
@@ -317,16 +353,25 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
 
         session.audioVideo.addObserver(observer);
 
-        // Initial video tile binding
-                  setTimeout(() => {
+        // Initial video tile binding - try multiple times to ensure it binds
+        const bindLocalVideo = () => {
           const localTile = session.audioVideo.getLocalVideoTile();
           if (localTile && localVideoRef.current) {
             const tileState = localTile.state();
             if (tileState && tileState.active && tileState.tileId !== null) {
               session.audioVideo.bindVideoElement(tileState.tileId, localVideoRef.current);
-                      }
-                    }
-                  }, 1000);
+              console.log('[VIDEO_CALL] Local video bound to element');
+            } else {
+              console.log('[VIDEO_CALL] Local tile not active yet, will retry');
+            }
+          }
+        };
+        
+        // Try immediately, then retry after delays
+        bindLocalVideo();
+        setTimeout(bindLocalVideo, 500);
+        setTimeout(bindLocalVideo, 1000);
+        setTimeout(bindLocalVideo, 2000);
 
       } catch (err: any) {
         console.error('Failed to initialize meeting:', err);
@@ -345,22 +390,91 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
           const session = meetingSessionRef.current;
           const audioVideoAny = session.audioVideo as any;
           const realtimeController = audioVideoAny.realtimeController;
-      if (realtimeController) {
-            // Get all attendees from realtime
+          
+          if (realtimeController) {
+            // Method 1: Use attendeePresenceStatus
             const attendees = realtimeController.attendeePresenceStatus || {};
-            const attendeeIds = Object.keys(attendees).filter(id => 
-              id !== currentAttendeeIdRef.current && attendees[id]?.present
+            const allAttendeeIds = Object.keys(attendees);
+            const presentAttendees = allAttendeeIds.filter(id => 
+              attendees[id]?.present === true
             );
-            const count = attendeeIds.length + 1; // +1 for yourself
-            setAttendeeCount(count);
             
-            // If no remote attendees, clear remote attendee
-            if (attendeeIds.length === 0) {
+            // Method 2: Use getAllVideoTiles to double-check
+            const allTiles = session.audioVideo.getAllVideoTiles();
+            const remoteTileAttendeeIds = new Set<string>();
+            allTiles.forEach((tile: any) => {
+              if (tile.state() && !tile.state().localTile && tile.state().boundAttendeeId) {
+                remoteTileAttendeeIds.add(tile.state().boundAttendeeId);
+              }
+            });
+            
+            // Method 3: Use getAllRemoteVideoSources
+            let remoteVideoSources: any[] = [];
+            try {
+              remoteVideoSources = realtimeController.getAllRemoteVideoSources?.() || [];
+            } catch (e) {
+              // Method not available
+            }
+            
+            // Count remote attendees (excluding self)
+            const remoteAttendeeIds = new Set<string>();
+            
+            // Add from presence status
+            presentAttendees.forEach(id => {
+              if (id !== currentAttendeeIdRef.current) {
+                remoteAttendeeIds.add(id);
+              }
+            });
+            
+            // Add from video tiles
+            remoteTileAttendeeIds.forEach(id => {
+              if (id !== currentAttendeeIdRef.current) {
+                remoteAttendeeIds.add(id);
+              }
+            });
+            
+            // Add from video sources
+            remoteVideoSources.forEach((source: any) => {
+              if (source.attendeeId && source.attendeeId !== currentAttendeeIdRef.current) {
+                remoteAttendeeIds.add(source.attendeeId);
+              }
+            });
+            
+            const totalCount = remoteAttendeeIds.size + 1; // +1 for yourself
+            setAttendeeCount(totalCount);
+            
+            console.log('[VIDEO_CALL] Attendee count update:', {
+              total: totalCount,
+              remote: remoteAttendeeIds.size,
+              yourself: 1,
+              remoteAttendeeIds: Array.from(remoteAttendeeIds),
+              presentAttendees,
+              remoteVideoSources: remoteVideoSources.length,
+            });
+            
+            // Update remote attendee if we have one
+            if (remoteAttendeeIds.size > 0) {
+              const firstRemoteId = Array.from(remoteAttendeeIds)[0];
+              const externalUserId = realtimeController.getAttendeeExternalUserId?.(firstRemoteId);
+              if (externalUserId) {
+                setRemoteAttendee({ attendeeId: firstRemoteId, email: externalUserId });
+              } else {
+                // Set with attendeeId as fallback
+                setRemoteAttendee(prev => {
+                  // Only update if we don't have one or if the attendee changed
+                  if (!prev || prev.attendeeId !== firstRemoteId) {
+                    return { attendeeId: firstRemoteId, email: firstRemoteId };
+                  }
+                  return prev;
+                });
+              }
+            } else {
+              // No remote attendees
               setRemoteAttendee(null);
             }
-        }
-      } catch (e) {
-          console.log('Error updating attendee count:', e);
+          }
+        } catch (e) {
+          console.error('[VIDEO_CALL] Error updating attendee count:', e);
         }
       };
 
