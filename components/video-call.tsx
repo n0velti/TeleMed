@@ -1057,16 +1057,18 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
               
               if (!tileState) continue;
               
-              const attendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
-              const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+              // CRITICAL: Use boundAttendeeId and localTile property
+              const attendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
+              const isLocal = tileState.localTile === true;
               
               // Skip local tiles
-              if (isLocal || attendeeId === currentUserIdRef.current) {
+              if (isLocal || (attendeeId && attendeeId === currentUserIdRef.current)) {
                 continue;
               }
               
               if (attendeeId && attendeeId !== currentUserIdRef.current) {
                 console.log('[VIDEO_CALL] Periodic check: Found remote tile:', {
+                  boundAttendeeId: tileState.boundAttendeeId,
                   attendeeId: attendeeId,
                   active: tileState.active,
                   bound: !!tileState.boundVideoElement,
@@ -1218,8 +1220,10 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       videoTileDidUpdate: (tileState: any) => {
         console.log('[VIDEO_CALL] 📹 Video tile updated:', {
           tileId: tileState.tileId,
-          attendeeId: tileState.attendeeId,
+          boundAttendeeId: tileState.boundAttendeeId,
+          boundExternalUserId: tileState.boundExternalUserId,
           isLocal: tileState.isLocal,
+          localTile: tileState.localTile,
           active: tileState.active,
           boundVideoElement: tileState.boundVideoElement ? 'Present' : 'Not bound',
           videoStreamContentWidth: tileState.videoStreamContentWidth,
@@ -1227,7 +1231,9 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         });
 
         // Handle LOCAL video tile - SIMPLE: bind when active
-        if (tileState.isLocal && tileState.active && localVideoElementRef.current) {
+        // CRITICAL: Check both isLocal property and localTile property
+        const isLocalTile = tileState.isLocal === true || tileState.localTile === true;
+        if (isLocalTile && tileState.active && localVideoElementRef.current) {
           if (tileState.boundVideoElement !== localVideoElementRef.current) {
             try {
               audioVideo.bindVideoElement(tileState.tileId, localVideoElementRef.current);
@@ -1248,20 +1254,25 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
               }
             }
           }
-        } else if (tileState.isLocal && !tileState.active && isVideoEnabled) {
+        } else if (isLocalTile && !tileState.active && isVideoEnabled) {
           // Tile exists but not active - this is normal, just wait for it to become active
           console.log('[VIDEO_CALL] ⏳ Local tile created but not active yet (waiting...)');
         }
 
         // Handle REMOTE video tile
-        if (tileState.attendeeId && tileState.attendeeId !== currentUserIdRef.current) {
+        // CRITICAL: Use boundAttendeeId and check localTile property
+        const remoteAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
+        const isRemoteTileForRemote = tileState.localTile !== true && !isLocalTile;
+        
+        if (remoteAttendeeId && isRemoteTileForRemote && remoteAttendeeId !== currentUserIdRef.current) {
           console.log('[VIDEO_CALL] 📹📹📹 REMOTE TILE DETECTED:', {
-            attendeeId: tileState.attendeeId,
+            boundAttendeeId: tileState.boundAttendeeId,
+            boundExternalUserId: tileState.boundExternalUserId,
+            attendeeId: remoteAttendeeId,
             active: tileState.active,
             tileId: tileState.tileId,
             hasElement: !!remoteVideoElementRef.current,
             bound: !!tileState.boundVideoElement,
-            boundElement: tileState.boundVideoElement,
             videoStreamContentWidth: tileState.videoStreamContentWidth,
             videoStreamContentHeight: tileState.videoStreamContentHeight,
           });
@@ -1272,16 +1283,16 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
           // CRITICAL: Subscribe to remote video FIRST (before binding)
           // In Chime SDK v3+, you need to explicitly subscribe to receive remote video
           if (tileState.active) {
-            console.log('[VIDEO_CALL] 🔔 Attempting to subscribe to remote video for:', tileState.attendeeId);
+            console.log('[VIDEO_CALL] 🔔 Attempting to subscribe to remote video for:', remoteAttendeeId);
             
             // Try multiple subscription methods depending on SDK version
             const subscribePromises: Promise<any>[] = [];
             
             // Method 1: startRemoteVideo (v3.0+)
             if (typeof audioVideo.startRemoteVideo === 'function') {
-              const promise1 = audioVideo.startRemoteVideo(tileState.attendeeId)
+              const promise1 = audioVideo.startRemoteVideo(remoteAttendeeId)
                 .then(() => {
-                  console.log('[VIDEO_CALL] ✓✓✓ Subscribed via startRemoteVideo:', tileState.attendeeId);
+                  console.log('[VIDEO_CALL] ✓✓✓ Subscribed via startRemoteVideo:', remoteAttendeeId);
                 })
                 .catch((subError: any) => {
                   console.log('[VIDEO_CALL] startRemoteVideo result:', subError?.message || 'Subscribed (no error)');
@@ -1291,9 +1302,9 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
             
             // Method 2: subscribeToRemoteVideo (alternative API)
             if (typeof audioVideo.subscribeToRemoteVideo === 'function') {
-              const promise2 = audioVideo.subscribeToRemoteVideo(tileState.attendeeId)
+              const promise2 = audioVideo.subscribeToRemoteVideo(remoteAttendeeId)
                 .then(() => {
-                  console.log('[VIDEO_CALL] ✓✓✓ Subscribed via subscribeToRemoteVideo:', tileState.attendeeId);
+                  console.log('[VIDEO_CALL] ✓✓✓ Subscribed via subscribeToRemoteVideo:', remoteAttendeeId);
                 })
                 .catch((subError: any) => {
                   console.log('[VIDEO_CALL] subscribeToRemoteVideo result:', subError?.message || 'Subscribed (no error)');
@@ -1308,7 +1319,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
               // Bind if tile is active and element exists
               if (remoteVideoElementRef.current && tileState.active) {
                 console.log('[VIDEO_CALL] 🔗🔗🔗 BINDING REMOTE VIDEO:', {
-                  attendeeId: tileState.attendeeId,
+                  attendeeId: remoteAttendeeId,
                   tileId: tileState.tileId,
                   active: tileState.active,
                 });
@@ -1551,14 +1562,18 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
                 
                 if (!tileState) continue;
                 
-                const tileAttendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
-                const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+                // CRITICAL: Use boundAttendeeId and localTile property
+                const tileAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
+                const isLocal = tileState.localTile === true;
                 
                 console.log('[VIDEO_CALL] Checking tile:', {
+                  boundAttendeeId: tileState.boundAttendeeId,
+                  boundExternalUserId: tileState.boundExternalUserId,
                   tileAttendeeId: tileAttendeeId,
                   matches: tileAttendeeId === attendeeId,
                   active: tileState.active,
                   isLocal: isLocal,
+                  localTile: tileState.localTile,
                 });
                 
                 if (tileAttendeeId === attendeeId && !isLocal) {
@@ -1668,8 +1683,9 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
                 
                 if (!tileState) continue;
                 
-                const tileAttendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
-                const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+                // CRITICAL: Use boundAttendeeId and localTile property
+                const tileAttendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
+                const isLocal = tileState.localTile === true;
                 
                 if (tileAttendeeId && !isLocal && tileAttendeeId !== currentUserIdRef.current && tileState.active) {
                   hasAnyRemote = true;
@@ -1787,22 +1803,43 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         
         console.log('[VIDEO_CALL] Tile raw keys:', Object.keys(tileObj));
         console.log('[VIDEO_CALL] Tile state keys:', Object.keys(tileState));
-        console.log('[VIDEO_CALL] Full tile state:', JSON.stringify(tileState, null, 2));
         
-        const attendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
-        const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+        // Log tile state properties without circular references
+        const safeTileState = {
+          tileId: tileState.tileId,
+          localTile: tileState.localTile,
+          localTileStarted: tileState.localTileStarted,
+          active: tileState.active,
+          boundAttendeeId: tileState.boundAttendeeId,
+          boundExternalUserId: tileState.boundExternalUserId,
+          hasBoundVideoElement: !!tileState.boundVideoElement,
+          videoStreamContentWidth: tileState.videoStreamContentWidth,
+          videoStreamContentHeight: tileState.videoStreamContentHeight,
+          streamId: tileState.streamId,
+          groupId: tileState.groupId,
+        };
+        console.log('[VIDEO_CALL] Safe tile state:', safeTileState);
+        
+        // CRITICAL: Chime SDK uses boundAttendeeId, not attendeeId!
+        // CRITICAL: Chime SDK uses boundAttendeeId, not attendeeId!
+        const attendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
+        // Use localTile property to identify local tiles
+        const isLocal = tileState.localTile === true;
         
         console.log('[VIDEO_CALL] Tile parsed:', {
           tileId: tileState.tileId,
+          boundAttendeeId: tileState.boundAttendeeId,
+          boundExternalUserId: tileState.boundExternalUserId,
           attendeeId: attendeeId,
           isLocal: isLocal,
+          localTile: tileState.localTile,
           active: tileState.active,
-          boundVideoElement: !!tileState.boundVideoElement,
+          hasBoundVideoElement: !!tileState.boundVideoElement,
         });
         
-        // Skip local tiles
-        if (isLocal || attendeeId === currentUserIdRef.current) {
-          console.log('[VIDEO_CALL] Skipping local tile');
+        // Skip local tiles - check both localTile property and current user
+        if (isLocal || (attendeeId && attendeeId === currentUserIdRef.current)) {
+          console.log('[VIDEO_CALL] Skipping local tile:', { isLocal, attendeeId, currentUser: currentUserIdRef.current });
           continue;
         }
         
@@ -1871,8 +1908,9 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         
         if (!tileState) continue;
         
-        const attendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
-        const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+        // CRITICAL: Use boundAttendeeId, not attendeeId
+        const attendeeId = tileState.boundAttendeeId || tileState.boundExternalUserId;
+        const isLocal = tileState.localTile === true;
         
         if (attendeeId && 
             !isLocal &&
@@ -1881,6 +1919,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
           hasActiveRemoteTile = true;
           console.log('[VIDEO_CALL] Found active remote tile:', {
             attendeeId: attendeeId,
+            boundAttendeeId: tileState.boundAttendeeId,
             tileId: tileState.tileId,
             bound: !!tileState.boundVideoElement,
           });
