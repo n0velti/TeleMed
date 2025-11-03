@@ -30,6 +30,8 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const currentAttendeeIdRef = useRef<string | null>(null);
+  const countIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const observerRef = useRef<any>(null);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -218,7 +220,7 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
         console.log('[VIDEO_CALL] Current attendee ID set:', currentAttendeeIdRef.current);
 
         // Set up observers BEFORE starting the session to catch all events
-    const observer = {
+    const observer: any = {
       videoTileDidUpdate: (tileState: any) => {
             console.log('[VIDEO_CALL] Video tile updated:', {
               tileId: tileState.tileId,
@@ -362,8 +364,8 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
                     setRemoteAttendee({ attendeeId, email: externalUserId });
                     console.log('[VIDEO_CALL] Remote attendee detected:', { attendeeId, email: externalUserId });
               }
-              }
-            } catch (e) {
+            }
+          } catch (e) {
                 console.log('[VIDEO_CALL] Could not get externalUserId:', e);
               }
             } else if (!presence.present && remoteAttendee?.attendeeId === attendeeId) {
@@ -423,6 +425,7 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
         };
 
         session.audioVideo.addObserver(observer);
+        observerRef.current = observer; // Store observer reference for cleanup
         console.log('[VIDEO_CALL] Observers registered');
 
         // Start session AFTER observers are set up
@@ -451,7 +454,9 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
               
               if (existingSources.length > 0) {
                 // Trigger the remoteVideoSourcesDidChange handler
-                observer.remoteVideoSourcesDidChange(existingSources);
+                if (observerRef.current?.remoteVideoSourcesDidChange) {
+                  observerRef.current.remoteVideoSourcesDidChange(existingSources);
+                }
               }
               
               // Also check all video tiles
@@ -460,12 +465,12 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
               
               allTiles.forEach((tile: any) => {
                 const tileState = tile.state();
-                if (tileState) {
-                  observer.videoTileDidUpdate(tileState);
+                if (tileState && observerRef.current?.videoTileDidUpdate) {
+                  observerRef.current.videoTileDidUpdate(tileState);
                 }
               });
-            }
-          } catch (e) {
+              }
+            } catch (e) {
             console.error('[VIDEO_CALL] Error checking existing sources:', e);
           }
         }, 1000);
@@ -497,8 +502,6 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
       }
     };
 
-    let countInterval: ReturnType<typeof setInterval> | null = null;
-    
     initialize().then(() => {
       // Set up periodic attendee count update after initialization
       const updateAttendeeCount = () => {
@@ -529,7 +532,7 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
             let remoteVideoSources: any[] = [];
             try {
               remoteVideoSources = realtimeController.getAllRemoteVideoSources?.() || [];
-            } catch (e) {
+      } catch (e) {
               // Method not available
             }
             
@@ -596,19 +599,30 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
       };
 
       // Update count periodically
-      countInterval = setInterval(updateAttendeeCount, 2000);
+      countIntervalRef.current = setInterval(updateAttendeeCount, 2000);
     });
 
     // Cleanup function
     return () => {
-      if (countInterval) {
-        clearInterval(countInterval);
+      if (countIntervalRef.current) {
+        clearInterval(countIntervalRef.current);
+        countIntervalRef.current = null;
       }
       if (meetingSessionRef.current) {
         const session = meetingSessionRef.current;
-        session.audioVideo.stopLocalVideoTile();
-        session.audioVideo.stop();
-        session.audioVideo.leave();
+        try {
+          session.audioVideo.stopLocalVideoTile();
+          session.audioVideo.stop();
+          // Remove observers if they exist
+          if (observerRef.current) {
+            session.audioVideo.removeObserver(observerRef.current);
+            observerRef.current = null;
+          }
+        } catch (e) {
+          console.error('[VIDEO_CALL] Error in cleanup:', e);
+        }
+        meetingSessionRef.current = null;
+        currentAttendeeIdRef.current = null;
       }
     };
   }, [appointmentId]);
@@ -648,10 +662,25 @@ export function VideoCall({ appointmentId, onCallEnd }: VideoCallProps) {
   const endCall = () => {
     if (meetingSessionRef.current) {
       const session = meetingSessionRef.current;
-      session.audioVideo.stopLocalVideoTile();
-      session.audioVideo.stop();
-      session.audioVideo.leave();
+      try {
+        session.audioVideo.stopLocalVideoTile();
+        session.audioVideo.stop();
+        // Remove observers if they exist
+        if (observerRef.current) {
+          session.audioVideo.removeObserver(observerRef.current);
+          observerRef.current = null;
+        }
+        } catch (e) {
+        console.error('[VIDEO_CALL] Error stopping session:', e);
+      }
     }
+    // Clear refs and intervals
+    if (countIntervalRef.current) {
+      clearInterval(countIntervalRef.current);
+      countIntervalRef.current = null;
+    }
+    meetingSessionRef.current = null;
+    currentAttendeeIdRef.current = null;
     onCallEnd?.();
   };
 
