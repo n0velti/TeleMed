@@ -1014,18 +1014,60 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
             console.log('[VIDEO_CALL] 🔄🔄🔄 PERIODIC CHECK FOR REMOTE VIDEO...');
             
             // Also try to bind any unbound remote video tiles
-            const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
-            console.log('[VIDEO_CALL] Periodic check: Found', allTiles.size, 'total tiles');
-            
-            for (const tile of Array.from(allTiles.values())) {
-              const tileObj = tile as any;
-              const tileState = tileObj.tileState || (typeof tileObj.state === 'function' ? tileObj.state() : tileObj);
+            let allTiles: any;
+            try {
+              const tilesResult = audioVideo.getAllVideoTiles?.();
               
-              if (tileState?.attendeeId && 
-                  tileState.attendeeId !== currentUserIdRef.current) {
-                
+              // Handle different return types
+              if (tilesResult instanceof Map) {
+                allTiles = tilesResult;
+              } else if (Array.isArray(tilesResult)) {
+                allTiles = tilesResult;
+              } else if (tilesResult && typeof tilesResult === 'object') {
+                allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
+              } else {
+                allTiles = new Map();
+              }
+            } catch (e) {
+              console.error('[VIDEO_CALL] Periodic check: Error getting tiles:', e);
+              allTiles = new Map();
+            }
+            
+            const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
+            console.log('[VIDEO_CALL] Periodic check: Found', tileArray.length, 'total tiles');
+            
+            for (const tile of tileArray) {
+              const tileObj = tile as any;
+              
+              // Get tile state
+              let tileState: any = null;
+              if (typeof tileObj.state === 'function') {
+                try {
+                  tileState = tileObj.state();
+                } catch (e) {
+                  // Ignore
+                }
+              }
+              if (!tileState && tileObj.tileState) {
+                tileState = tileObj.tileState;
+              }
+              if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
+                tileState = tileObj;
+              }
+              
+              if (!tileState) continue;
+              
+              const attendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
+              const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+              
+              // Skip local tiles
+              if (isLocal || attendeeId === currentUserIdRef.current) {
+                continue;
+              }
+              
+              if (attendeeId && attendeeId !== currentUserIdRef.current) {
                 console.log('[VIDEO_CALL] Periodic check: Found remote tile:', {
-                  attendeeId: tileState.attendeeId,
+                  attendeeId: attendeeId,
                   active: tileState.active,
                   bound: !!tileState.boundVideoElement,
                   hasRemoteElement: !!remoteVideoElementRef.current,
@@ -1035,11 +1077,11 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
                 if (tileState.active && 
                     remoteVideoElementRef.current &&
                     tileState.boundVideoElement !== remoteVideoElementRef.current) {
-                  console.log('[VIDEO_CALL] 🔄🔄🔄 PERIODIC CHECK: Binding remote video!', tileState.attendeeId);
+                  console.log('[VIDEO_CALL] 🔄🔄🔄 PERIODIC CHECK: Binding remote video!', attendeeId);
                   try {
                     // Try to subscribe first
                     if (typeof audioVideo.startRemoteVideo === 'function') {
-                      audioVideo.startRemoteVideo(tileState.attendeeId).catch((e: any) => {
+                      audioVideo.startRemoteVideo(attendeeId).catch((e: any) => {
                         console.log('[VIDEO_CALL] Periodic subscription:', e?.message || 'OK');
                       });
                     }
@@ -1468,22 +1510,58 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
             console.log('[VIDEO_CALL] 🔍 Checking for remote video (attempt', attempt, '/', maxAttempts, ') for:', attendeeId);
             
             try {
-              const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
-              console.log('[VIDEO_CALL] Total tiles available:', allTiles.size);
+              let allTiles: any;
+              try {
+                const tilesResult = audioVideo.getAllVideoTiles?.();
+                if (tilesResult instanceof Map) {
+                  allTiles = tilesResult;
+                } else if (Array.isArray(tilesResult)) {
+                  allTiles = tilesResult;
+                } else if (tilesResult && typeof tilesResult === 'object') {
+                  allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
+                } else {
+                  allTiles = new Map();
+                }
+              } catch (e) {
+                allTiles = new Map();
+              }
+              
+              const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
+              console.log('[VIDEO_CALL] Total tiles available:', tileArray.length);
               
               let foundTile = false;
-              for (const tile of Array.from(allTiles.values())) {
+              for (const tile of tileArray) {
                 const tileObj = tile as any;
-                const tileState = tileObj.tileState || (typeof tileObj.state === 'function' ? tileObj.state() : tileObj);
+                
+                // Get tile state using same logic
+                let tileState: any = null;
+                if (typeof tileObj.state === 'function') {
+                  try {
+                    tileState = tileObj.state();
+                  } catch (e) {
+                    // Ignore
+                  }
+                }
+                if (!tileState && tileObj.tileState) {
+                  tileState = tileObj.tileState;
+                }
+                if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
+                  tileState = tileObj;
+                }
+                
+                if (!tileState) continue;
+                
+                const tileAttendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
+                const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
                 
                 console.log('[VIDEO_CALL] Checking tile:', {
-                  attendeeId: tileState?.attendeeId,
-                  matches: tileState?.attendeeId === attendeeId,
-                  active: tileState?.active,
-                  isLocal: tileState?.isLocal,
+                  tileAttendeeId: tileAttendeeId,
+                  matches: tileAttendeeId === attendeeId,
+                  active: tileState.active,
+                  isLocal: isLocal,
                 });
                 
-                if (tileState?.attendeeId === attendeeId && !tileState.isLocal) {
+                if (tileAttendeeId === attendeeId && !isLocal) {
                   foundTile = true;
                   console.log('[VIDEO_CALL] ✓✓✓ Found remote tile for attendee:', {
                     attendeeId,
@@ -1555,16 +1633,56 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
           
           // Check if we should clear remote video state
           setTimeout(() => {
-            const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
-            const hasAnyRemote = Array.from(allTiles.values()).some((tile: any) => {
-              const tileState = tile.tileState || (typeof tile.state === 'function' ? tile.state() : tile);
-              return tileState?.attendeeId && 
-                     tileState.attendeeId !== currentUserIdRef.current && 
-                     tileState.active;
-            });
-            if (!hasAnyRemote) {
-              setHasRemoteVideo(false);
-              console.log('[VIDEO_CALL] No remote attendees left, cleared remote video state');
+            try {
+              let allTiles: any;
+              const tilesResult = audioVideo.getAllVideoTiles?.();
+              if (tilesResult instanceof Map) {
+                allTiles = tilesResult;
+              } else if (Array.isArray(tilesResult)) {
+                allTiles = tilesResult;
+              } else if (tilesResult && typeof tilesResult === 'object') {
+                allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
+              } else {
+                allTiles = new Map();
+              }
+              
+              const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
+              let hasAnyRemote = false;
+              
+              for (const tile of tileArray) {
+                const tileObj = tile as any;
+                let tileState: any = null;
+                if (typeof tileObj.state === 'function') {
+                  try {
+                    tileState = tileObj.state();
+                  } catch (e) {
+                    // Ignore
+                  }
+                }
+                if (!tileState && tileObj.tileState) {
+                  tileState = tileObj.tileState;
+                }
+                if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
+                  tileState = tileObj;
+                }
+                
+                if (!tileState) continue;
+                
+                const tileAttendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
+                const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+                
+                if (tileAttendeeId && !isLocal && tileAttendeeId !== currentUserIdRef.current && tileState.active) {
+                  hasAnyRemote = true;
+                  break;
+                }
+              }
+              
+              if (!hasAnyRemote) {
+                setHasRemoteVideo(false);
+                console.log('[VIDEO_CALL] No remote attendees left, cleared remote video state');
+              }
+            } catch (e) {
+              console.error('[VIDEO_CALL] Error checking remote tiles:', e);
             }
           }, 1000);
         }
@@ -1601,23 +1719,97 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       const remoteAttendeeIds = new Set<string>();
       
       // Method 1: Check video tiles (for attendees with video)
-      const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
-      const tileArray = Array.from(allTiles.values());
+      // getAllVideoTiles() can return a Map, array, or object depending on SDK version
+      let allTiles: any;
+      try {
+        const tilesResult = audioVideo.getAllVideoTiles?.();
+        console.log('[VIDEO_CALL] getAllVideoTiles() returned:', {
+          type: typeof tilesResult,
+          isMap: tilesResult instanceof Map,
+          isArray: Array.isArray(tilesResult),
+          keys: tilesResult ? Object.keys(tilesResult) : [],
+          size: tilesResult?.size,
+          length: tilesResult?.length,
+        });
+        
+        // Handle different return types
+        if (tilesResult instanceof Map) {
+          allTiles = tilesResult;
+        } else if (Array.isArray(tilesResult)) {
+          allTiles = tilesResult;
+        } else if (tilesResult && typeof tilesResult === 'object') {
+          // Convert object/iterable to array
+          allTiles = Array.from ? Array.from(tilesResult as any) : Object.values(tilesResult);
+        } else {
+          allTiles = new Map();
+        }
+      } catch (e) {
+        console.error('[VIDEO_CALL] Error getting video tiles:', e);
+        allTiles = new Map();
+      }
+      
+      // Convert to array for iteration
+      const tileArray = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
       console.log('[VIDEO_CALL] Checking tiles:', tileArray.length, 'total');
+      
       for (const tile of tileArray) {
         const tileObj = tile as any;
-        // Tile state is in .tileState property, not .state() method
-        const tileState = tileObj.tileState || (typeof tileObj.state === 'function' ? tileObj.state() : tileObj);
-        console.log('[VIDEO_CALL] Tile raw:', Object.keys(tileObj));
-        console.log('[VIDEO_CALL] Tile:', {
-          tileId: tileState?.tileId,
-          attendeeId: tileState?.attendeeId,
-          isLocal: tileState?.isLocal,
-          active: tileState?.active,
+        
+        // Try multiple ways to get tile state
+        let tileState: any = null;
+        
+        // Method 1: Check if tile has .state() method
+        if (typeof tileObj.state === 'function') {
+          try {
+            tileState = tileObj.state();
+            console.log('[VIDEO_CALL] Got tile state via .state() method');
+          } catch (e) {
+            console.log('[VIDEO_CALL] .state() method failed:', e);
+          }
+        }
+        
+        // Method 2: Check tileState property
+        if (!tileState && tileObj.tileState) {
+          tileState = tileObj.tileState;
+          console.log('[VIDEO_CALL] Got tile state via .tileState property');
+        }
+        
+        // Method 3: Tile might BE the state object
+        if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
+          tileState = tileObj;
+          console.log('[VIDEO_CALL] Using tile object directly as state');
+        }
+        
+        if (!tileState) {
+          console.warn('[VIDEO_CALL] Could not extract tile state from:', Object.keys(tileObj));
+          continue;
+        }
+        
+        console.log('[VIDEO_CALL] Tile raw keys:', Object.keys(tileObj));
+        console.log('[VIDEO_CALL] Tile state keys:', Object.keys(tileState));
+        console.log('[VIDEO_CALL] Full tile state:', JSON.stringify(tileState, null, 2));
+        
+        const attendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
+        const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+        
+        console.log('[VIDEO_CALL] Tile parsed:', {
+          tileId: tileState.tileId,
+          attendeeId: attendeeId,
+          isLocal: isLocal,
+          active: tileState.active,
+          boundVideoElement: !!tileState.boundVideoElement,
         });
-        if (tileState?.attendeeId && 
-            tileState.attendeeId !== currentUserIdRef.current) {
-          remoteAttendeeIds.add(tileState.attendeeId);
+        
+        // Skip local tiles
+        if (isLocal || attendeeId === currentUserIdRef.current) {
+          console.log('[VIDEO_CALL] Skipping local tile');
+          continue;
+        }
+        
+        // If it's a remote tile, add to set
+        if (attendeeId && attendeeId !== currentUserIdRef.current) {
+          console.log('[VIDEO_CALL] ✓✓✓ Found remote attendee:', attendeeId);
+          remoteAttendeeIds.add(attendeeId);
         }
       }
       
@@ -1657,16 +1849,38 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       // Update hasRemoteVideo based on active remote tiles
       // IMPORTANT: Check tileState property correctly
       let hasActiveRemoteTile = false;
-      for (const tile of Array.from(allTiles.values())) {
+      const checkTiles = allTiles instanceof Map ? Array.from(allTiles.values()) : (Array.isArray(allTiles) ? allTiles : []);
+      for (const tile of checkTiles) {
         const tileObj = tile as any;
-        const tileState = tileObj.tileState || (typeof tileObj.state === 'function' ? tileObj.state() : tileObj);
         
-        if (tileState?.attendeeId && 
-            tileState.attendeeId !== currentUserIdRef.current && 
+        // Get tile state using same logic as above
+        let tileState: any = null;
+        if (typeof tileObj.state === 'function') {
+          try {
+            tileState = tileObj.state();
+          } catch (e) {
+            // Ignore
+          }
+        }
+        if (!tileState && tileObj.tileState) {
+          tileState = tileObj.tileState;
+        }
+        if (!tileState && (tileObj.tileId !== undefined || tileObj.attendeeId !== undefined)) {
+          tileState = tileObj;
+        }
+        
+        if (!tileState) continue;
+        
+        const attendeeId = tileState.attendeeId || tileState.boundAttendeeId || tileState.boundExternalUserId;
+        const isLocal = tileState.isLocal !== undefined ? tileState.isLocal : (tileState.localTile !== undefined);
+        
+        if (attendeeId && 
+            !isLocal &&
+            attendeeId !== currentUserIdRef.current && 
             tileState.active) {
           hasActiveRemoteTile = true;
           console.log('[VIDEO_CALL] Found active remote tile:', {
-            attendeeId: tileState.attendeeId,
+            attendeeId: attendeeId,
             tileId: tileState.tileId,
             bound: !!tileState.boundVideoElement,
           });
