@@ -1405,9 +1405,17 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       const remoteAttendeeIds = new Set<string>();
       
       // Method 1: Check video tiles (for attendees with video)
-      const allTiles = audioVideo.getAllVideoTiles?.() || audioVideo.getAllVideoTiles?.() || new Map();
-      for (const tile of Array.from(allTiles.values())) {
+      const allTiles = audioVideo.getAllVideoTiles?.() || new Map();
+      const tileArray = Array.from(allTiles.values());
+      console.log('[VIDEO_CALL] Checking tiles:', tileArray.length, 'total');
+      for (const tile of tileArray) {
         const tileState = tile as any;
+        console.log('[VIDEO_CALL] Tile:', {
+          tileId: tileState?.tileId,
+          attendeeId: tileState?.attendeeId,
+          isLocal: tileState?.isLocal,
+          active: tileState?.active,
+        });
         if (tileState?.attendeeId && 
             tileState.attendeeId !== currentUserIdRef.current) {
           remoteAttendeeIds.add(tileState.attendeeId);
@@ -1416,6 +1424,7 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       
       // Method 2: Check remote video sources
       const allAttendees = audioVideo.getAllRemoteVideoSources?.() || [];
+      console.log('[VIDEO_CALL] Remote video sources:', allAttendees.length);
       for (const source of allAttendees) {
         if (source?.attendeeId && source.attendeeId !== currentUserIdRef.current) {
           remoteAttendeeIds.add(source.attendeeId);
@@ -1427,14 +1436,18 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
         const realtimeController = audioVideo.realtimeController || (audioVideo as any).realtimeController;
         if (realtimeController) {
           const allRemoteIds = realtimeController.getAllRemoteAttendeeIds?.() || [];
+          console.log('[VIDEO_CALL] Remote attendees from realtime:', allRemoteIds.length);
+          console.log('[VIDEO_CALL] Remote attendee IDs:', allRemoteIds);
           for (const attendeeId of allRemoteIds) {
             if (attendeeId && attendeeId !== currentUserIdRef.current) {
               remoteAttendeeIds.add(attendeeId);
             }
           }
+        } else {
+          console.log('[VIDEO_CALL] No realtime controller available');
         }
       } catch (e) {
-        // Realtime controller might not be available
+        console.log('[VIDEO_CALL] Realtime controller error:', e);
       }
       
       const remoteCount = remoteAttendeeIds.size;
