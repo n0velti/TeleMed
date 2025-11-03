@@ -1409,7 +1409,10 @@ export function VideoCall({ appointmentId, onCallEnd, userName }: VideoCallProps
       const tileArray = Array.from(allTiles.values());
       console.log('[VIDEO_CALL] Checking tiles:', tileArray.length, 'total');
       for (const tile of tileArray) {
-        const tileState = tile as any;
+        const tileObj = tile as any;
+        // Try both .state() and direct access
+        const tileState = typeof tileObj.state === 'function' ? tileObj.state() : tileObj;
+        console.log('[VIDEO_CALL] Tile raw:', Object.keys(tileObj));
         console.log('[VIDEO_CALL] Tile:', {
           tileId: tileState?.tileId,
           attendeeId: tileState?.attendeeId,
