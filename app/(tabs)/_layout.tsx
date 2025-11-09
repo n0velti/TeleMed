@@ -42,7 +42,21 @@ export default function TabLayout() {
       <Tabs.Screen
         name="schedule"
         options={{
-          title: 'Schedule',
+          title: 'Appointments',
+          href: !isAuthenticated ? null : undefined,
+        }}
+      />
+      <Tabs.Screen
+        name="medical-records"
+        options={{
+          title: 'Medical Records',
+          href: !isAuthenticated ? null : undefined,
+        }}
+      />
+      <Tabs.Screen
+        name="prescriptions"
+        options={{
+          title: 'Prescriptions',
           href: !isAuthenticated ? null : undefined,
         }}
       />

@@ -9,6 +9,7 @@ import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { PlatformPressable } from '@react-navigation/elements';
 import { generateClient } from 'aws-amplify/data';
 import * as Haptics from 'expo-haptics';
+import * as Location from 'expo-location';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
@@ -27,6 +28,8 @@ const getIconName = (routeName: string): string => {
     'pricing': 'credit-card',
     'about': 'info',
     'schedule': 'calendar',
+    'medical-records': 'file',
+    'prescriptions': 'beaker',
     'messages': 'comment',
     'notifications': 'bell',
     'get-care': 'plus-circle',
@@ -54,11 +57,86 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   const [isSearching, setIsSearching] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [userLocation, setUserLocation] = useState<{ city: string; state: string } | null>(null);
+  const accountButtonRef = useRef<View>(null);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
 
   // Refresh auth state when route changes (e.g., after login/verification)
   useEffect(() => {
     refreshAuth();
   }, [state.index, refreshAuth]);
+
+  // Fetch user location when authenticated
+  useEffect(() => {
+    const fetchLocation = async () => {
+      if (!isAuthenticated) {
+        setUserLocation(null);
+        return;
+      }
+
+      try {
+        // Check if location services are enabled
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
+        if (!servicesEnabled) {
+          console.log('[LOCATION] Location services are disabled');
+          setUserLocation(null);
+          return;
+        }
+
+        // Request foreground permissions
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          console.log('[LOCATION] Permission not granted, status:', status);
+          setUserLocation(null);
+          return;
+        }
+
+        // Get current position with better accuracy settings
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced, // Balanced accuracy for better performance
+        });
+
+        console.log('[LOCATION] Position obtained:', {
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          accuracy: location.coords.accuracy,
+        });
+
+        // Reverse geocode to get address
+        const reverseGeocode = await Location.reverseGeocodeAsync({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        });
+
+        console.log('[LOCATION] Reverse geocode result:', JSON.stringify(reverseGeocode, null, 2));
+        
+        if (reverseGeocode.length > 0) {
+          const addr = reverseGeocode[0];
+          const locationData = {
+            city: addr.city || addr.subregion || addr.district || '',
+            state: addr.region || addr.subregion || '',
+          };
+          console.log('[LOCATION] Setting location:', locationData);
+          // Only set if we have at least city or state
+          if (locationData.city || locationData.state) {
+            setUserLocation(locationData);
+          } else {
+            console.log('[LOCATION] No valid city or state found in geocode result');
+            setUserLocation(null);
+          }
+        } else {
+          console.log('[LOCATION] No geocode results');
+          setUserLocation(null);
+        }
+      } catch (error) {
+        console.error('[LOCATION] Error fetching location:', error);
+        // Don't show alert to user, just log and set location to null
+        setUserLocation(null);
+      }
+    };
+
+    fetchLocation();
+  }, [isAuthenticated]);
 
   // Separate regular tabs from bottom tabs
   // Bottom tabs are always "get-care" and "account" regardless of position
@@ -74,13 +152,14 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
   // - If authenticated: exclude Pricing and About
   // - If NOT authenticated: exclude Schedule, Messages, Notifications
   // Sort to ensure correct order: Home, Pricing, About (if not logged in), Schedule, Messages, Notifications (if logged in)
-  const tabOrder = ['index', 'pricing', 'about', 'schedule', 'messages', 'notifications'];
+  const tabOrder = ['index', 'pricing', 'about', 'schedule', 'messages', 'medical-records', 'prescriptions'];
   const regularTabs = state.routes
     .filter(route => {
       const isBottomTab = route.name === 'get-care' || route.name === 'account';
       const shouldHideWhenLoggedIn = route.name === 'pricing' || route.name === 'about';
-      const shouldHideWhenLoggedOut = route.name === 'schedule' || route.name === 'messages' || route.name === 'notifications';
+      const shouldHideWhenLoggedOut = route.name === 'schedule' || route.name === 'medical-records' || route.name === 'prescriptions' || route.name === 'messages' || route.name === 'notifications';
       const isSpecialist = route.name === 'specialist';
+      if (route.name === 'notifications') return false;
       if (isBottomTab) return false;
       if (isSpecialist) return false;
       if (isAuthenticated && shouldHideWhenLoggedIn) return false;
@@ -214,8 +293,19 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
 
   const handleAccountPress = () => {
     if (isAuthenticated && user) {
-      // Show logout menu if authenticated
-      setShowLogoutMenu(true);
+      // Get button position for popup placement
+      if (accountButtonRef.current) {
+        accountButtonRef.current.measureInWindow((x, y, width, height) => {
+          // Position menu below the button with additional offset
+          setMenuPosition({
+            x,
+            y: y + height - 155,
+          });
+          setShowLogoutMenu(true);
+        });
+      } else {
+        setShowLogoutMenu(true);
+      }
     } else {
       // Navigate to account screen if not authenticated
       const accountRoute = state.routes.find(route => route.name === 'account');
@@ -538,6 +628,43 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
     }
   };
 
+  const handleNotificationsPress = () => {
+    setShowLogoutMenu(false);
+    const notificationsRoute = state.routes.find(route => route.name === 'notifications');
+    if (notificationsRoute) {
+      const event = navigation.emit({
+        type: 'tabPress',
+        target: notificationsRoute.key,
+        canPreventDefault: true,
+      });
+
+      if (!event.defaultPrevented) {
+        navigation.navigate(notificationsRoute.name, notificationsRoute.params);
+      }
+    }
+  };
+
+  const handleSettingsPress = () => {
+    setShowLogoutMenu(false);
+    const settingsRoute = state.routes.find(route => route.name === 'settings');
+    if (settingsRoute) {
+      const event = navigation.emit({
+        type: 'tabPress',
+        target: settingsRoute.key,
+        canPreventDefault: true,
+      });
+
+      if (!event.defaultPrevented) {
+        navigation.navigate(settingsRoute.name, settingsRoute.params);
+      }
+    } else {
+      const accountRoute = state.routes.find(route => route.name === 'account');
+      if (accountRoute) {
+        navigation.navigate(accountRoute.name, { screen: 'settings' });
+      }
+    }
+  };
+
   return (
     <>
     <Animated.View style={[
@@ -659,34 +786,37 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                 
                 {/* Add search button after Home tab (first tab) */}
                 {route.name === 'index' && (
-                  <TouchableOpacity
-                    onPress={handleSearchToggle}
-                    style={[
-                      styles.searchButton,
-                      // Show active style when search is expanded
-                      isSearchExpanded && styles.activeTabButton
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel="Search"
-                    {...({
-                      onMouseEnter: () => setHoveredTab('search'),
-                      onMouseLeave: () => setHoveredTab(null),
-                    } as any)}
-                  >
-                    <Octicons 
-                      name="search" 
-                      size={18} 
-                      color={isSearchExpanded ? 'black' : (hoveredTab === 'search' ? '#111111' : '#666666')} 
-                      style={styles.tabIcon}
-                    />
-                    <Animated.Text style={[
-                      styles.searchButtonLabel,
-                      { 
-                        color: isSearchExpanded ? 'black' : (hoveredTab === 'search' ? '#111111' : '#666666'),
-                        opacity: textOpacity,
-                      }
-                    ]}>Search</Animated.Text>
-                  </TouchableOpacity>
+                  <>
+                    <TouchableOpacity
+                      onPress={handleSearchToggle}
+                      style={[
+                        styles.searchButton,
+                        // Show active style when search is expanded
+                        isSearchExpanded && styles.activeTabButton
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel="Search"
+                      {...({
+                        onMouseEnter: () => setHoveredTab('search'),
+                        onMouseLeave: () => setHoveredTab(null),
+                      } as any)}
+                    >
+                      <Octicons 
+                        name="search" 
+                        size={18} 
+                        color={isSearchExpanded ? 'black' : (hoveredTab === 'search' ? '#111111' : '#666666')} 
+                        style={styles.tabIcon}
+                      />
+                      <Animated.Text style={[
+                        styles.searchButtonLabel,
+                        { 
+                          color: isSearchExpanded ? 'black' : (hoveredTab === 'search' ? '#111111' : '#666666'),
+                          opacity: textOpacity,
+                        }
+                      ]}>Search</Animated.Text>
+                    </TouchableOpacity>
+                    <View style={styles.sectionDivider} />
+                  </>
                 )}
               </React.Fragment>
             );
@@ -729,12 +859,13 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                     }
                   };
 
-                  const iconColor = isGetCare ? 'red' : (isFocused ? 'black' : (isHovered ? '#333333' : '#666666'));
-                  const textColor = isGetCare ? 'red' : (isFocused ? 'black' : (isHovered ? '#333333' : '#666666'));
+                  const iconColor = isGetCare ? 'white' : (isFocused ? 'black' : (isHovered ? '#333333' : '#666666'));
+                  const textColor = isGetCare ? 'white' : (isFocused ? 'black' : (isHovered ? '#333333' : '#666666'));
 
                   return (
                     <PlatformPressable
                       key={route.key}
+                      ref={isAccount ? accountButtonRef : undefined}
                       accessibilityRole="button"
                       accessibilityState={isFocused ? { selected: true } : {}}
                       accessibilityLabel={options.tabBarAccessibilityLabel}
@@ -757,24 +888,59 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                       pressRetentionOffset={0}
                     >
                       <Octicons 
-                        name={getIconName(route.name) as any} 
+                        name={isGetCare ? 'plus' : (getIconName(route.name) as any)} 
                         size={18} 
                         color={iconColor} 
                         style={styles.tabIcon}
                       />
-                      <Animated.Text 
-                        style={[
-                          isGetCare ? styles.getCareText : styles.accountText,
-                          isFocused && styles.activeBottomText,
-                          isAccount && isAuthenticated && userEmail && styles.accountEmailText,
-                          !isGetCare && { color: textColor },
-                          { opacity: textOpacity }
-                        ]}
-                        numberOfLines={1}
-                        ellipsizeMode="middle"
-                      >
-                        {label}
-                      </Animated.Text>
+                      {isGetCare ? (
+                        <Animated.Text 
+                          style={[
+                            styles.tabLabel,
+                            { 
+                              color: 'white',
+                              opacity: textOpacity,
+                            }
+                          ]}
+                        >
+                          {label}
+                        </Animated.Text>
+                      ) : (
+                        <View style={styles.accountButtonContent}>
+                          <Animated.Text 
+                            style={[
+                              styles.accountText,
+                              isFocused && styles.activeBottomText,
+                              isAccount && isAuthenticated && userEmail && styles.accountEmailText,
+                              { color: textColor },
+                              { opacity: textOpacity }
+                            ]}
+                            numberOfLines={1}
+                            ellipsizeMode="middle"
+                          >
+                            {label}
+                          </Animated.Text>
+                          {isAccount && isAuthenticated && (
+                            <>
+                              {userLocation && (userLocation.city || userLocation.state) ? (
+                                <Text 
+                                  style={styles.accountLocationText}
+                                  numberOfLines={1}
+                                >
+                                  {[userLocation.city, userLocation.state].filter(Boolean).join(', ')}
+                                </Text>
+                              ) : (
+                                <Text 
+                                  style={[styles.accountLocationText, { fontStyle: 'italic', opacity: 0.6 }]}
+                                  numberOfLines={1}
+                                >
+                                  Location unavailable
+                                </Text>
+                              )}
+                            </>
+                          )}
+                        </View>
+                      )}
                     </PlatformPressable>
                   );
                 })}
@@ -980,7 +1146,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
         </TouchableOpacity>
       </Modal>
 
-      {/* Logout Menu Modal */}
+      {/* Account Menu Modal */}
       <Modal
         visible={showLogoutMenu}
         transparent={true}
@@ -988,29 +1154,46 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
         onRequestClose={() => setShowLogoutMenu(false)}
       >
         <TouchableOpacity
-          style={styles.modalOverlay}
+          style={styles.menuOverlay}
           activeOpacity={1}
           onPress={() => setShowLogoutMenu(false)}
         >
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={(e) => e.stopPropagation()}
+          <View
+            style={[
+              styles.menuContainer,
+              {
+                position: 'absolute',
+                top: menuPosition.y > 0 ? menuPosition.y : undefined,
+                bottom: menuPosition.y <= 0 ? 60 : undefined,
+                left: menuPosition.x > 0 ? menuPosition.x : 12,
+              }
+            ]}
+            pointerEvents="box-none"
           >
-            <View style={styles.menuContainer}>
+            <View style={styles.menuContent}>
               <TouchableOpacity
                 style={styles.menuItem}
-                onPress={handleLogout}
+                onPress={handleNotificationsPress}
               >
-                <Text style={styles.menuItemText}>Log Out</Text>
+                <Octicons name="bell" size={14} color="#111827" style={styles.menuItemIcon} />
+                <Text style={styles.menuItemTextRegular}>Notifications</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={handleSettingsPress}
+              >
+                <Octicons name="gear" size={14} color="#111827" style={styles.menuItemIcon} />
+                <Text style={styles.menuItemTextRegular}>Settings</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.menuItem, styles.menuItemLast]}
-                onPress={() => setShowLogoutMenu(false)}
+                onPress={handleLogout}
               >
-                <Text style={styles.menuCancelText}>Cancel</Text>
+                <Octicons name="sign-out" size={14} color="#E53E3E" style={styles.menuItemIcon} />
+                <Text style={styles.menuItemText}>Log Out</Text>
               </TouchableOpacity>
             </View>
-          </TouchableOpacity>
+          </View>
         </TouchableOpacity>
       </Modal>
     </>
@@ -1030,10 +1213,9 @@ const styles = StyleSheet.create({
   animatedContainer: {
     paddingTop: 20,
     paddingHorizontal: 12,
-    paddingBottom: 20,
+    paddingBottom: 0,
     backgroundColor: 'white',
-    borderRightWidth: 1,
-    borderRightColor: '#E0E0E0',
+    borderRightWidth: 0,
     flexShrink: 0,
     alignSelf: 'stretch',
     flexDirection: 'column',
@@ -1132,7 +1314,8 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   activeTabButton: {
-    backgroundColor: '#EDEDED',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 3,
   },
   tabLabel: {
     fontSize: 12,
@@ -1142,6 +1325,9 @@ const styles = StyleSheet.create({
     marginRight: 14,
     width: 18,
     height: 18,
+  },
+  sectionDivider: {
+    height: 16,
   },
   searchButton: {
     flexDirection: 'row',
@@ -1288,18 +1474,19 @@ const styles = StyleSheet.create({
   },
   bottomButtons: {
     paddingTop: 20,
-    paddingBottom: 20,
+    paddingBottom: 5,
   },
   getCareButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 9,
+    justifyContent: 'flex-start',
+    paddingVertical: 10,
     paddingHorizontal: 12,
     marginBottom: 6,
-    borderRadius: 9,
+    borderRadius: 3,
     borderWidth: 1,
     borderColor: 'transparent',
-    backgroundColor: '#FFE5E5',
+    backgroundColor: '#E50914',
   },
   getCareText: {
     fontSize: 12,
@@ -1313,9 +1500,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginBottom: 6,
     borderRadius: 9,
-    borderWidth: 1,
-    borderColor: 'transparent',
-    backgroundColor: '#F5F5F5',
+  },
+  accountButtonContent: {
+    flex: 1,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    minHeight: 20,
+  },
+  accountLocationText: {
+    fontSize: 10,
+    fontWeight: '400',
+    color: '#999999',
+    marginTop: 2,
+    opacity: 1,
+    lineHeight: 12,
+    minHeight: 12,
   },
   accountText: {
     fontSize: 12,
@@ -1323,14 +1523,13 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   activeBottomButton: {
-    borderWidth: 1,
-    borderColor: 'transparent',
-    backgroundColor: '#EDEDED',
+    borderRadius: 3,
   },
   activeGetCareButton: {
     borderWidth: 1,
     borderColor: 'transparent',
-    backgroundColor: '#FFE5E5',
+    backgroundColor: '#E50914',
+    borderRadius: 3,
   },
   activeBottomText: {
     fontWeight: '600',
@@ -1344,31 +1543,44 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.15)',
+  },
   menuContainer: {
     backgroundColor: 'white',
-    borderRadius: 12,
-    paddingVertical: 8,
-    minWidth: 200,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    borderRadius: 3,
+    paddingVertical: 4,
+    width: 235,
+  },
+  menuContent: {
+    width: '100%',
   },
   menuItem: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
+  },
+  menuItemIcon: {
+    marginRight: 12,
+    width: 16,
+    height: 16,
   },
   menuItemLast: {
     borderBottomWidth: 0,
   },
   menuItemText: {
-    fontSize: 16,
+    fontSize: 12,
     color: '#E53E3E',
     fontWeight: '500',
-    textAlign: 'center',
+  },
+  menuItemTextRegular: {
+    fontSize: 12,
+    color: '#111827',
+    fontWeight: '500',
   },
   menuCancelText: {
     fontSize: 16,

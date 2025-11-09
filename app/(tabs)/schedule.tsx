@@ -122,7 +122,7 @@ export default function ScheduleScreen() {
         onDateChange={handleDateChange}
         startHour={0}
         endHour={23}
-        hourRowHeight={60}
+        hourRowHeight={50}
         mode="week"
       />
     </ThemedView>
