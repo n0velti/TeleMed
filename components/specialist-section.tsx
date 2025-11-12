@@ -26,9 +26,10 @@ interface SpecialistSectionProps {
   specialists: Specialist[];
   onSpecialistPress?: (specialist: Specialist) => void;
   onTitlePress?: (title: string) => void;
+  isFirst?: boolean;
 }
 
-export function SpecialistSection({ title, specialists, onSpecialistPress, onTitlePress }: SpecialistSectionProps) {
+export function SpecialistSection({ title, specialists, onSpecialistPress, onTitlePress, isFirst }: SpecialistSectionProps) {
   const flatListRef = useRef<FlatList>(null);
   const [scrollPosition, setScrollPosition] = useState(0);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -105,7 +106,7 @@ export function SpecialistSection({ title, specialists, onSpecialistPress, onTit
 
   return (
     <ThemedView style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, isFirst && styles.firstHeader]}>
         <TouchableOpacity 
           style={styles.titleContainer}
           onPress={() => onTitlePress?.(title)}
@@ -194,8 +195,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 11,
     marginHorizontal: 16,
+    marginTop: 0,
+  },
+  firstHeader: {
+    marginTop: 55,
   },
   titleContainer: {
     flexDirection: 'row',
@@ -204,13 +209,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   title: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 15,
+    fontWeight: '500',
     alignSelf: 'center',
   },
   titleArrow: {
     opacity: 0.6,
     marginLeft: -4,
+    alignSelf: 'center',
   },
   carouselContainer: {
     position: 'relative',

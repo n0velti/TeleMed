@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "TeleMed",
-    "slug": "TeleMed",
+    "name": "Serphint",
+    "slug": "serphint",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -24,7 +24,8 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "name": "Serphint"
     },
     "plugins": [
       "expo-router",

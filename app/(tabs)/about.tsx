@@ -7,7 +7,7 @@ export default function AboutScreen() {
   return (
     <ThemedView style={styles.container}>
       <ThemedText type="title">About</ThemedText>
-      <ThemedText>Learn more about TeleMed and our mission.</ThemedText>
+      <ThemedText>Learn more about Serphint and our mission.</ThemedText>
     </ThemedView>
   );
 }

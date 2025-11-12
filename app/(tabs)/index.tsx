@@ -107,6 +107,7 @@ export default function HomeScreen() {
   const [availabilityFilter, setAvailabilityFilter] = useState<'all' | 'today'>('all');
   const [ratingFilter, setRatingFilter] = useState<'all' | '4.5' | '4.7' | '4.9'>('all');
   const [familyMedicineSpecialists, setFamilyMedicineSpecialists] = useState<Specialist[]>([]);
+  const [locationFilter, setLocationFilter] = useState('');
   const [isLoadingFamilyMedicine, setIsLoadingFamilyMedicine] = useState(false);
 
   // Fetch Family Medicine specialists from database
@@ -275,9 +276,11 @@ export default function HomeScreen() {
         priceFilter={priceFilter}
         availabilityFilter={availabilityFilter}
         ratingFilter={ratingFilter}
+        locationFilter={locationFilter}
         onPriceFilterChange={setPriceFilter}
         onAvailabilityFilterChange={setAvailabilityFilter}
         onRatingFilterChange={setRatingFilter}
+        onLocationFilterChange={setLocationFilter}
       />
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         <ThemedView style={styles.sectionsContainer}>
@@ -292,6 +295,7 @@ export default function HomeScreen() {
                 specialists={fmSpecialists}
                 onSpecialistPress={handleSpecialistPress}
                 onTitlePress={handleTitlePress}
+                isFirst={true}
               />
             );
           })()}
@@ -328,8 +332,9 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   sectionsContainer: {
-    paddingTop: 16,
+    paddingTop: 0,
     paddingBottom: 20,
+    paddingLeft: 16,
   },
   noResultsContainer: {
     padding: 40,

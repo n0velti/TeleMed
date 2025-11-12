@@ -214,7 +214,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
         // Animate the slide
         Animated.timing(slideAnim, {
           toValue: newState ? 1 : 0,
-          duration: 300,
+          duration: 180,
           useNativeDriver: false, // width animations need layout driver
         }).start();
       }, 50);
@@ -229,7 +229,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
     // Animate the slide
     Animated.timing(slideAnim, {
       toValue: newState ? 1 : 0,
-      duration: 300,
+      duration: 180,
       useNativeDriver: false, // width animations need layout driver
     }).start();
   };
@@ -276,9 +276,14 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
     outputRange: [1, 0.5, 0],
   });
 
-  const headerOpacity = slideAnim.interpolate({
+  const logoTextOpacity = slideAnim.interpolate({
     inputRange: [0, 0.5, 1],
-    outputRange: [1, 0.5, 0],
+    outputRange: [1, 0.4, 0],
+  });
+
+  const logoIconScale = slideAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1],
   });
 
   // Auto-collapse/expand tab bar when messages or search is focused
@@ -286,7 +291,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
     const shouldCollapse = isMessagesExpanded || isSearchExpanded;
     Animated.timing(slideAnim, {
       toValue: shouldCollapse ? 1 : 0,
-      duration: 300,
+      duration: 180,
       useNativeDriver: false,
     }).start();
   }, [isMessagesExpanded, isSearchExpanded]);
@@ -665,6 +670,48 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
     }
   };
 
+  const handleLogoPress = () => {
+    if (isSearchExpanded) {
+      setIsSearchExpanded(false);
+      setSearchQuery('');
+
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: false,
+      }).start();
+    }
+
+    const homeRoute = state.routes.find(route => route.name === 'index');
+    if (!homeRoute) return;
+
+    const event = navigation.emit({
+      type: 'tabPress',
+      target: homeRoute.key,
+      canPreventDefault: true,
+    });
+
+    if (!event.defaultPrevented) {
+      navigation.navigate(homeRoute.name, homeRoute.params);
+    }
+  };
+
+  const handleAccountMenuPress = () => {
+    setShowLogoutMenu(false);
+    const accountRoute = state.routes.find(route => route.name === 'account');
+    if (accountRoute) {
+      const event = navigation.emit({
+        type: 'tabPress',
+        target: accountRoute.key,
+        canPreventDefault: true,
+      });
+
+      if (!event.defaultPrevented) {
+        navigation.navigate(accountRoute.name, accountRoute.params);
+      }
+    }
+  };
+
   return (
     <>
     <Animated.View style={[
@@ -684,17 +731,44 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
           },
         ]}
       >
-        <Animated.View
-          style={[
-            styles.headerRow,
-            { opacity: headerOpacity },
-          ]}
-          pointerEvents={isSearchExpanded || isMessagesExpanded ? 'none' : 'auto'}
-        >
-          <Text style={[styles.title, { color: Colors[resolvedScheme].text }]}>
-            TeleMed
-          </Text>
-        </Animated.View>
+        <View style={styles.headerRow}>
+          <PlatformPressable
+            accessibilityRole="button"
+            accessibilityLabel="Go to home"
+            onPress={handleLogoPress}
+            pressOpacity={1}
+            android_ripple={null}
+            style={styles.logoContainer}
+            {...({
+              onMouseEnter: () => setHoveredTab('serphint-logo'),
+              onMouseLeave: () => setHoveredTab(null),
+            } as any)}
+          >
+            <Animated.View
+              style={{
+                transform: [{ scale: logoIconScale }],
+              }}
+            >
+              <Octicons
+                name="light-bulb"
+                size={18}
+                color={Colors[resolvedScheme].text}
+                style={styles.logoIcon}
+              />
+            </Animated.View>
+            <Animated.Text
+              style={[
+                styles.title,
+                {
+                  color: Colors[resolvedScheme].text,
+                  opacity: logoTextOpacity,
+                },
+              ]}
+            >
+              Serphint
+            </Animated.Text>
+          </PlatformPressable>
+        </View>
 
         {/* Always render tabs, but animate text opacity */}
         <View style={styles.tabsContainer}>
@@ -773,13 +847,17 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                     color={iconColor} 
                     style={styles.tabIcon}
                   />
-                  <Animated.Text style={[
+                  <Animated.Text
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                    style={[
                     styles.tabLabel,
                     { 
                       color: textColor,
                       opacity: textOpacity,
                     }
-                  ]}>
+                  ]}
+                  >
                     {label}
                   </Animated.Text>
                 </PlatformPressable>
@@ -815,13 +893,20 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                         }
                       ]}>Search</Animated.Text>
                     </TouchableOpacity>
-                    <View style={styles.sectionDivider} />
+                    <View 
+                      style={[
+                        styles.sectionDivider,
+                        {
+                          borderTopColor: resolvedScheme === 'dark' ? '#2a2a2a' : '#e5e5e5',
+                        }
+                      ]} 
+                    />
                   </>
                 )}
               </React.Fragment>
             );
           })}
-            </View>
+        </View>
             
             {/* Bottom buttons with animated text */}
             <View style={styles.bottomButtons}>
@@ -894,7 +979,9 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                         style={styles.tabIcon}
                       />
                       {isGetCare ? (
-                        <Animated.Text 
+                        <Animated.Text
+                          numberOfLines={1}
+                          ellipsizeMode="tail"
                           style={[
                             styles.tabLabel,
                             { 
@@ -920,54 +1007,12 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
                           >
                             {label}
                           </Animated.Text>
-                          {isAccount && isAuthenticated && (
-                            <>
-                              {userLocation && (userLocation.city || userLocation.state) ? (
-                                <Text 
-                                  style={styles.accountLocationText}
-                                  numberOfLines={1}
-                                >
-                                  {[userLocation.city, userLocation.state].filter(Boolean).join(', ')}
-                                </Text>
-                              ) : (
-                                <Text 
-                                  style={[styles.accountLocationText, { fontStyle: 'italic', opacity: 0.6 }]}
-                                  numberOfLines={1}
-                                >
-                                  Location unavailable
-                                </Text>
-                              )}
-                            </>
-                          )}
                         </View>
                       )}
                     </PlatformPressable>
                   );
                 })}
               </View>
-            
-            {/* Collapsed header icon */}
-            <Animated.View
-              style={[
-                styles.collapsedHeader,
-                {
-                  opacity: slideAnim.interpolate({
-                    inputRange: [0, 0.5, 1],
-                    outputRange: [0, 0, 1],
-                  }),
-                  position: 'absolute',
-                  top: 20,
-                  left: 12,
-                  pointerEvents: isSearchExpanded ? 'auto' : 'none',
-                }
-              ]}
-            >
-              <Octicons 
-                name="ai-model" 
-                size={24} 
-                color="black" 
-              />
-            </Animated.View>
       </Animated.View>
       
       {/* Search area - appears next to collapsed tabs */}
@@ -987,6 +1032,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
             value={searchQuery}
             onChangeText={setSearchQuery}
             autoFocus={true}
+            underlineColorAndroid="transparent"
           />
           <ScrollView style={styles.searchResults}>
             {searchQuery.trim() ? (
@@ -1027,6 +1073,7 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
             value={messagesQuery}
             onChangeText={setMessagesQuery}
             autoFocus={false}
+            underlineColorAndroid="transparent"
           />
           <ScrollView style={styles.searchResults}>
             {isLoadingConversations ? (
@@ -1173,6 +1220,13 @@ export function CustomLeftTabBar({ state, descriptors, navigation }: BottomTabBa
             <View style={styles.menuContent}>
               <TouchableOpacity
                 style={styles.menuItem}
+                onPress={handleAccountMenuPress}
+              >
+                <Octicons name="person" size={14} color="#111827" style={styles.menuItemIcon} />
+                <Text style={styles.menuItemTextRegular}>My Account</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.menuItem}
                 onPress={handleNotificationsPress}
               >
                 <Octicons name="bell" size={14} color="#111827" style={styles.menuItemIcon} />
@@ -1206,6 +1260,7 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'visible',
     flexShrink: 0,
+  
   },
   searchLayout: {
     flex: 1,
@@ -1255,12 +1310,6 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     justifyContent: 'space-between',
   },
-  collapsedHeader: {
-    paddingLeft: 12,
-    paddingBottom: 40,
-    paddingTop: 0,
-    width: '100%',
-  },
   collapsedTabsTop: {
     flexGrow: 1,
   },
@@ -1285,11 +1334,20 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 60,
+    position: 'relative',
+    minHeight: 36,
+  },
+  logoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  logoIcon: {
+    marginRight: 8,
   },
   title: {
-    fontSize: 19,
+    fontSize: 16,
     fontWeight: '500',
-    paddingHorizontal: 12,
   },
   closeButton: {
     padding: 8,
@@ -1307,7 +1365,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-start',
-    paddingVertical: 10,
+    paddingVertical: 7,
     paddingHorizontal: 12,
     marginBottom: 8,
     borderRadius: 9,
@@ -1320,6 +1378,7 @@ const styles = StyleSheet.create({
   tabLabel: {
     fontSize: 12,
     fontWeight: '500',
+    flexShrink: 1,
   },
   tabIcon: {
     marginRight: 14,
@@ -1327,14 +1386,19 @@ const styles = StyleSheet.create({
     height: 18,
   },
   sectionDivider: {
-    height: 16,
+    height: 1,
+    borderTopWidth: 1,
+    marginTop: 20,
+    marginBottom: 20,
+    marginLeft: 12,
+    marginRight: 12,
   },
   searchButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 7,
     paddingHorizontal: 12,
-    marginBottom: 8,
+    marginBottom: 0,
     borderRadius: 9,
     width: '100%',
     justifyContent: 'flex-start',
@@ -1358,13 +1422,15 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     backgroundColor: '#F8F9FA',
-    borderRadius: 8,
+    borderRadius: 3,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 8,
     fontSize: 14,
     borderWidth: 1,
     borderColor: '#E0E0E0',
     marginBottom: 12,
+    outline: 'none',
+    outlineWidth: 0,
   },
   searchResults: {
     flex: 1,
@@ -1480,7 +1546,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-start',
-    paddingVertical: 10,
+    paddingVertical: 7,
     paddingHorizontal: 12,
     marginBottom: 6,
     borderRadius: 3,
@@ -1496,7 +1562,7 @@ const styles = StyleSheet.create({
   accountButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 9,
+    paddingVertical: 7,
     paddingHorizontal: 12,
     marginBottom: 6,
     borderRadius: 9,

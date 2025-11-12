@@ -89,7 +89,7 @@ const allSpecialists: Record<string, Specialist> = {
 export default function SpecialistDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user, userEmail } = useAuth();
-  const { createAppointment, isLoading: isCreating } = useAppointments();
+  const { createAppointment, fetchAppointments, isLoading: isCreating } = useAppointments();
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [startTime, setStartTime] = useState<string>('');
@@ -282,6 +282,9 @@ export default function SpecialistDetailScreen() {
       Alert.alert('Error', result.error || 'Failed to book appointment. Please try again.');
       return;
     }
+
+    // Refresh appointments list to include the new appointment
+    await fetchAppointments();
 
     setShowBookingModal(false);
 

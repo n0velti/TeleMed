@@ -1,6 +1,7 @@
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 import { useColorScheme } from '@/hooks/use-color-scheme';
+import Octicons from '@expo/vector-icons/Octicons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -37,12 +38,26 @@ export function StaticSidebar() {
     }
   };
 
+  const isDark = colorScheme === 'dark';
+  
   return (
-    <View style={[styles.container, isSearchExpanded && styles.expandedContainer]}>
+    <View style={[
+      styles.container, 
+      isSearchExpanded && styles.expandedContainer,
+      { backgroundColor: isDark ? '#1a1a1a' : '#ffffff', borderRightColor: isDark ? '#333' : '#E0E0E0' }
+    ]}>
       <View style={styles.headerRow}>
-        <Text style={[styles.title, { color: Colors[colorScheme ?? 'light'].text }]}>
-          TeleMed
-        </Text>
+        <View style={styles.logoContainer}>
+          <Octicons
+            name="light-bulb"
+            size={18}
+            color={Colors[colorScheme ?? 'light'].text}
+            style={styles.logoIcon}
+          />
+          <Text style={[styles.title, { color: Colors[colorScheme ?? 'light'].text }]}>
+            Serphint
+          </Text>
+        </View>
         {isSearchExpanded && (
           <TouchableOpacity onPress={handleSearchToggle} style={styles.closeButton}>
             <Text style={styles.closeButtonText}>✕</Text>
@@ -127,10 +142,12 @@ const styles = StyleSheet.create({
     width: 260,
     paddingTop: 20,
     paddingHorizontal: 12,
+    paddingBottom: 0,
     backgroundColor: 'white',
-    borderRightWidth: 1,
-    borderRightColor: '#E0E0E0',
-    flex: 1,
+    borderRightWidth: 0,
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    flexDirection: 'column',
   },
   expandedContainer: {
     width: 500,
@@ -141,10 +158,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 40,
   },
+  logoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  logoIcon: {
+    marginRight: 8,
+  },
   title: {
     fontSize: 19,
     fontWeight: '500',
-    paddingHorizontal: 12,
   },
   closeButton: {
     padding: 8,

@@ -1,9 +1,12 @@
-import { StaticSidebar } from '@/components/static-sidebar';
+import { CustomLeftTabBar } from '@/components/custom-left-tab-bar';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppointments, type Appointment } from '@/hooks/use-appointments';
 import { useAuth } from '@/hooks/use-auth';
-import { LinearGradient } from 'expo-linear-gradient';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import Octicons from '@expo/vector-icons/Octicons';
+import type { BottomTabNavigationState } from '@react-navigation/bottom-tabs';
+import { useNavigation } from '@react-navigation/native';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
@@ -11,9 +14,122 @@ import { ActivityIndicator, Alert, ScrollView, StyleSheet, TouchableOpacity, Vie
 export default function AppointmentDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const navigation = useNavigation();
   const { appointments, isLoading: appointmentsLoading, fetchAppointments } = useAppointments();
   const { isAuthenticated } = useAuth();
+  const colorScheme = useColorScheme();
   const [appointment, setAppointment] = useState<Appointment | null>(null);
+  
+  // Get the actual tab state from the navigation tree
+  const tabState = React.useMemo(() => {
+    let parent = navigation.getParent();
+    while (parent) {
+      const state = parent.getState();
+      if (state && 'routes' in state) {
+        const routes = (state as any).routes;
+        const routeNames = routes.map((r: any) => r.name);
+        // Check if this is the tab navigator (has routes like 'index', 'schedule', etc.)
+        if (routeNames.includes('index') || routeNames.includes('schedule') || routeNames.includes('messages')) {
+          return state as BottomTabNavigationState;
+        }
+        // Check if this contains the (tabs) route
+        const tabsRoute = routes.find((r: any) => r.name === '(tabs)');
+        if (tabsRoute && tabsRoute.state) {
+          return tabsRoute.state as BottomTabNavigationState;
+        }
+      }
+      parent = parent.getParent();
+    }
+    return undefined;
+  }, [navigation]) as BottomTabNavigationState | undefined;
+  
+  // Create a navigation object that can navigate to tabs using router
+  const tabNavigator = React.useMemo(() => {
+    return {
+      navigate: (name: string, params?: any) => {
+        // Navigate to the tab route - use replace to go back to tabs from detail page
+        // For index route, navigate to /(tabs) which is the home tab
+        if (name === 'index') {
+          router.replace('/(tabs)' as any);
+        } else {
+          router.replace(`/(tabs)/${name}` as any);
+        }
+      },
+      jumpTo: (name: string, params?: any) => {
+        // Same as navigate - replace current route to go back to tabs
+        if (name === 'index') {
+          router.replace('/(tabs)' as any);
+        } else {
+          router.replace(`/(tabs)/${name}` as any);
+        }
+      },
+      emit: (event: any) => {
+        // Emit navigation events (used by CustomLeftTabBar)
+        return { defaultPrevented: false };
+      },
+      dispatch: (action: any) => {
+        // Handle navigation actions
+        if (action.type === 'NAVIGATE' || action.type === 'JUMP_TO') {
+          const routeName = action.payload?.name || action.payload?.routeName;
+          if (routeName) {
+            if (routeName === 'index') {
+              router.replace('/(tabs)' as any);
+            } else {
+              router.replace(`/(tabs)/${routeName}` as any);
+            }
+          }
+        }
+      },
+      getParent: () => navigation.getParent(),
+      getState: () => tabState,
+    } as any;
+  }, [navigation, router, tabState]);
+  
+  // Create mock descriptors for CustomLeftTabBar, filtering out the "(tabs)" route
+  // Use the same navigation object for all descriptors
+  // Map route names to their display titles
+  const routeTitleMap: Record<string, string> = {
+    'index': 'Home',
+    'schedule': 'Appointments',
+    'messages': 'Messages',
+    'notifications': 'Notifications',
+    'medical-records': 'Medical Records',
+    'prescriptions': 'Prescriptions',
+    'pricing': 'Pricing',
+    'about': 'About',
+    'get-care': 'Get Care Now',
+    'account': 'Account',
+  };
+  
+  const mockDescriptors = React.useMemo(() => {
+    if (!tabState || !tabNavigator) return {};
+    const filteredRoutes = tabState.routes.filter(route => route.name !== '(tabs)');
+    return filteredRoutes.reduce((acc, route) => {
+      acc[route.key] = {
+        options: {
+          title: routeTitleMap[route.name] || route.name, // Use mapped title or fallback to route name
+        },
+        navigation: tabNavigator, // Use the same navigation object
+        route,
+      };
+      return acc;
+    }, {} as any);
+  }, [tabState, tabNavigator]);
+  
+  // Filter the tab state to exclude the "(tabs)" route
+  // Don't highlight any tab when viewing appointment details (set index to -1 or a non-existent index)
+  const filteredTabState = React.useMemo(() => {
+    if (!tabState) return undefined;
+    const filteredRoutes = tabState.routes.filter(route => route.name !== '(tabs)');
+    if (filteredRoutes.length === 0) return undefined;
+    
+    // Set index to -1 so no tab is highlighted when viewing appointment details
+    return {
+      ...tabState,
+      routes: filteredRoutes,
+      index: -1, // No tab selected when viewing appointment detail
+    } as BottomTabNavigationState;
+  }, [tabState]);
 
   // Fetch appointments and find the specific appointment
   useEffect(() => {
@@ -29,11 +145,25 @@ export default function AppointmentDetailScreen() {
     }
   }, [appointments, id]);
 
+  // Render CustomLeftTabBar if we have tab state
+  const renderTabBar = () => {
+    if (filteredTabState && tabNavigator && Object.keys(mockDescriptors).length > 0) {
+      return (
+        <CustomLeftTabBar
+          state={filteredTabState}
+          descriptors={mockDescriptors}
+          navigation={tabNavigator as any}
+        />
+      );
+    }
+    return null;
+  };
+
   if (appointmentsLoading) {
     return (
       <View style={styles.wrapper}>
         <Stack.Screen options={{ headerShown: false }} />
-        <StaticSidebar />
+        {renderTabBar()}
         <ThemedView style={styles.container}>
           <ActivityIndicator size="large" style={styles.loader} />
           <ThemedText style={styles.loadingText}>Loading appointment...</ThemedText>
@@ -46,7 +176,7 @@ export default function AppointmentDetailScreen() {
     return (
       <View style={styles.wrapper}>
         <Stack.Screen options={{ headerShown: false }} />
-        <StaticSidebar />
+        {renderTabBar()}
         <ThemedView style={styles.container}>
           <ThemedText style={styles.errorText}>Appointment not found</ThemedText>
         </ThemedView>
@@ -84,19 +214,15 @@ export default function AppointmentDetailScreen() {
     router.push(`/video-call/${appointment.id}`);
   };
 
-  const getGradientColors = (): readonly [string, string] => {
-    return ['#667eea', '#764ba2'];
-  };
-
   const formatDate = (dateStr?: string) => {
     if (!dateStr) return 'N/A';
     try {
       const date = new Date(dateStr + 'T00:00:00');
+      // Show short date format: "Nov 3, 2025" to match schedule tab
       return date.toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
+        month: 'short',
         day: 'numeric',
+        year: 'numeric',
       });
     } catch {
       return dateStr;
@@ -129,7 +255,7 @@ export default function AppointmentDetailScreen() {
     }
   };
 
-  const gradientColors = getGradientColors();
+  const isDark = colorScheme === 'dark';
 
   return (
     <View style={styles.wrapper}>
@@ -138,79 +264,153 @@ export default function AppointmentDetailScreen() {
           headerShown: false,
         }} 
       />
-      <StaticSidebar />
+      {renderTabBar()}
       <ThemedView style={styles.container}>
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <ScrollView 
+          style={styles.scrollView} 
+          showsVerticalScrollIndicator={false} 
+          contentContainerStyle={styles.scrollContent}
+        >
           <View style={styles.appointmentContainer}>
-            {/* Compact Header Card */}
-            <ThemedView style={styles.headerCard}>
-              <View style={styles.headerLeft}>
-                <LinearGradient
-                  colors={gradientColors}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.miniAvatar}
-                >
-                  <ThemedText style={styles.miniInitials}>
-                    {appointment.specialistName?.split(' ').map(n => n[0]).join('') || 'DR'}
+            {/* Main Info Card */}
+            <ThemedView 
+              style={[
+                styles.card,
+                {
+                  backgroundColor: isDark ? '#1a1a1a' : '#ffffff',
+                }
+              ]}
+            >
+              {/* Doctor Header */}
+              <View style={styles.doctorHeader}>
+                <View style={styles.doctorInfo}>
+                  <ThemedText style={styles.doctorName}>
+                    {appointment.specialistName || 'Unknown Specialist'}
                   </ThemedText>
-                </LinearGradient>
-                <View style={styles.headerText}>
-                  <ThemedText style={styles.headerName}>{appointment.specialistName || 'Unknown Specialist'}</ThemedText>
-                  <ThemedText style={styles.headerSub}>{appointment.specialistSpecialty || 'N/A'}</ThemedText>
+                  <ThemedText style={styles.doctorSpecialty}>
+                    {appointment.specialistSpecialty || 'N/A'}
+                  </ThemedText>
+                </View>
+                {appointment.status && (
+                  <View style={[styles.statusBadge, { backgroundColor: getStatusColor(appointment.status) + '20' }]}>
+                    <ThemedText style={[styles.statusBadgeText, { color: getStatusColor(appointment.status) }]}>
+                      {appointment.status}
+                    </ThemedText>
+                  </View>
+                )}
+              </View>
+
+              {/* Appointment Details Grid */}
+              <View style={styles.detailsGrid}>
+                <View style={styles.detailItem}>
+                  <View style={styles.detailIcon}>
+                    <Octicons 
+                      name="calendar" 
+                      size={16} 
+                      color={isDark ? '#9BA1A6' : '#687076'} 
+                    />
+                  </View>
+                  <View style={styles.detailContent}>
+                    <ThemedText style={styles.detailLabel}>Date</ThemedText>
+                    <ThemedText style={styles.detailValue}>{formatDate(appointment.appointmentDate)}</ThemedText>
+                  </View>
+                </View>
+
+                <View style={styles.detailItem}>
+                  <View style={styles.detailIcon}>
+                    <Octicons 
+                      name="clock" 
+                      size={16} 
+                      color={isDark ? '#9BA1A6' : '#687076'} 
+                    />
+                  </View>
+                  <View style={styles.detailContent}>
+                    <ThemedText style={styles.detailLabel}>Time</ThemedText>
+                    <ThemedText style={styles.detailValue}>
+                      {formatTime(appointment.startTime)} - {formatTime(appointment.endTime)}
+                    </ThemedText>
+                  </View>
+                </View>
+
+                <View style={styles.detailItem}>
+                  <View style={styles.detailIcon}>
+                    <Octicons 
+                      name="hourglass" 
+                      size={16} 
+                      color={isDark ? '#9BA1A6' : '#687076'} 
+                    />
+                  </View>
+                  <View style={styles.detailContent}>
+                    <ThemedText style={styles.detailLabel}>Duration</ThemedText>
+                    <ThemedText style={styles.detailValue}>{appointment.duration || 'N/A'}</ThemedText>
+                  </View>
                 </View>
               </View>
-              {appointment.status && (
-                <View style={[styles.statusPill, { backgroundColor: getStatusColor(appointment.status) + '20' }]}>
-                  <ThemedText style={[styles.statusPillText, { color: getStatusColor(appointment.status) }]}>
-                    {appointment.status}
-                  </ThemedText>
-                </View>
-              )}
             </ThemedView>
 
-            {/* Quick Facts Row */}
-            <View style={styles.quickRow}>
-              <View style={styles.quickItem}>
-                <ThemedText style={styles.quickLabel}>Date</ThemedText>
-                <ThemedText style={styles.quickValue}>{formatDate(appointment.appointmentDate)}</ThemedText>
-              </View>
-              <View style={styles.quickItem}>
-                <ThemedText style={styles.quickLabel}>Time</ThemedText>
-                <ThemedText style={styles.quickValue}>{formatTime(appointment.startTime)} - {formatTime(appointment.endTime)}</ThemedText>
-              </View>
-              <View style={styles.quickItem}>
-                <ThemedText style={styles.quickLabel}>Duration</ThemedText>
-                <ThemedText style={styles.quickValue}>{appointment.duration || 'N/A'}</ThemedText>
-              </View>
-            </View>
-
-            {/* Purpose Card (optional) */}
+            {/* Purpose Card */}
             {appointment.purpose && (
-              <ThemedView style={styles.card}>
-                <ThemedText style={styles.cardTitle}>Purpose</ThemedText>
-                <ThemedText style={styles.cardBody}>{appointment.purpose}</ThemedText>
-              </ThemedView>
+              <>
+                <View 
+                  style={[
+                    styles.divider,
+                    {
+                      backgroundColor: isDark ? '#2a2a2a' : '#e5e5e5',
+                    }
+                  ]} 
+                />
+                <ThemedView 
+                  style={[
+                    styles.card,
+                    styles.cardSpaced,
+                    {
+                      backgroundColor: isDark ? '#1a1a1a' : '#ffffff',
+                    }
+                  ]}
+                >
+                  <ThemedText style={styles.cardTitle}>Purpose</ThemedText>
+                  <ThemedText style={styles.cardText}>{appointment.purpose}</ThemedText>
+                </ThemedView>
+              </>
             )}
 
-            {/* Notes Card (optional) */}
+            {/* Notes Card */}
             {appointment.notes && (
-              <ThemedView style={styles.card}>
+              <ThemedView 
+                style={[
+                  styles.card,
+                  styles.cardSpaced,
+                  {
+                    backgroundColor: isDark ? '#1a1a1a' : '#ffffff',
+                  }
+                ]}
+              >
                 <ThemedText style={styles.cardTitle}>Notes</ThemedText>
-                <ThemedText style={styles.cardBody}>{appointment.notes}</ThemedText>
+                <ThemedText style={styles.cardText}>{appointment.notes}</ThemedText>
               </ThemedView>
             )}
 
-          {/* Actions */}
-          <View style={styles.actionsRow}>
-            <TouchableOpacity 
-              style={styles.joinButtonSmall}
-              onPress={handleJoinCall}
-              activeOpacity={0.9}
-            >
-              <ThemedText style={styles.joinButtonSmallText}>Join Video Call</ThemedText>
-            </TouchableOpacity>
-          </View>
+            {/* Join Call Button */}
+            <View style={styles.actionsContainer}>
+              <TouchableOpacity 
+                style={styles.joinButton}
+                onPress={handleJoinCall}
+                activeOpacity={0.7}
+              >
+                <Octicons 
+                  name="video" 
+                  size={14} 
+                  color={isDark ? '#0a7ea4' : '#0a7ea4'} 
+                />
+                <ThemedText 
+                  style={styles.joinButtonText}
+                  lightColor="#0a7ea4"
+                  darkColor="#0a7ea4"
+                >
+                  Join Video Call
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.spacer} />
@@ -227,161 +427,137 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
+    minWidth: 0,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
+    paddingTop: 48,
+    paddingBottom: 48,
     alignItems: 'center',
-    paddingVertical: 20,
   },
   appointmentContainer: {
     width: '100%',
-    maxWidth: 600,
+    maxWidth: 680,
+    alignSelf: 'center',
   },
-  headerCard: {
-    marginHorizontal: 20,
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(128, 128, 128, 0.12)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  miniAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  miniInitials: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  headerText: {
-    flex: 1,
-  },
-  headerName: {
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: 2,
-  },
-  headerSub: {
-    fontSize: 13,
-    opacity: 0.6,
-  },
-  statusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  statusPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'capitalize',
-  },
-  quickRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginHorizontal: 20,
-    marginTop: 12,
-  },
-  quickItem: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: 'rgba(128, 128, 128, 0.12)',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-  },
-  quickLabel: {
-    fontSize: 11,
-    opacity: 0.6,
-    marginBottom: 4,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    fontWeight: '600',
-  },
-  quickValue: {
-    fontSize: 14,
-    fontWeight: '600',
+  divider: {
+    height: 1,
+    marginTop: 8,
+    marginBottom: 16,
+    width: '100%',
+    maxWidth: 680,
   },
   card: {
-    marginHorizontal: 20,
-    marginTop: 12,
-    padding: 14,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(128, 128, 128, 0.12)',
+    padding: 20,
+    marginBottom: 16,
   },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 6,
+  cardSpaced: {
+    marginTop: 0,
   },
-  cardBody: {
-    fontSize: 14,
-    opacity: 0.85,
-    lineHeight: 20,
+  doctorHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 24,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(128, 128, 128, 0.1)',
   },
-  stickyFooter: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    padding: 16,
-    backgroundColor: 'rgba(255,255,255,0.9)',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(128, 128, 128, 0.12)',
+  doctorInfo: {
+    flex: 1,
   },
-  joinButton: {
-    backgroundColor: '#0095f6',
-    paddingVertical: 14,
+  doctorName: {
+    fontSize: 22,
+    fontWeight: '600',
+    marginBottom: 4,
+    letterSpacing: -0.3,
+  },
+  doctorSpecialty: {
+    fontSize: 15,
+    fontWeight: '400',
+    opacity: 0.6,
+    letterSpacing: -0.2,
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 12,
+    marginLeft: 12,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'capitalize',
+  },
+  detailsGrid: {
+    gap: 16,
+  },
+  detailItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  detailIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(128, 128, 128, 0.08)',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#0095f6',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 5,
+    marginRight: 12,
+  },
+  detailContent: {
+    flex: 1,
+    paddingTop: 2,
+  },
+  detailLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    opacity: 0.6,
+    marginBottom: 4,
+    letterSpacing: -0.1,
+  },
+  detailValue: {
+    fontSize: 15,
+    fontWeight: '500',
+    letterSpacing: -0.2,
+  },
+  cardTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 8,
+    letterSpacing: -0.2,
+  },
+  cardText: {
+    fontSize: 15,
+    fontWeight: '400',
+    lineHeight: 22,
+    opacity: 0.8,
+    letterSpacing: -0.1,
+  },
+  actionsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 8,
+    marginBottom: 0,
+  },
+  joinButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 6,
   },
   joinButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#fff',
+    fontSize: 13,
+    fontWeight: '500',
+    letterSpacing: -0.1,
   },
   spacer: {
     height: 30,
-  },
-  actionsRow: {
-    marginTop: 12,
-    marginHorizontal: 20,
-    alignItems: 'flex-end',
-  },
-  joinButtonSmall: {
-    backgroundColor: '#0a7ea4',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  joinButtonSmallText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
   },
   loader: {
     marginTop: '50%',
