@@ -380,14 +380,14 @@ export async function createMeetingSessionWithAmplify(
       const meetingResponseData = await meetingResponse.json() as MeetingConfig;
       meeting = meetingResponseData;
       
-      // Debug: Log the full response to understand structure
-      console.log('[CHIME] Meeting response data:', JSON.stringify(meeting, null, 2));
-      console.log('[CHIME] Meeting ID from response:', meeting.meetingId);
+      // Log essential information only (avoid stringifying large objects)
+      console.log('[CHIME] Meeting response received');
+      console.log('[CHIME] Meeting ID:', meeting?.meetingId);
       
       if (!meeting || !meeting.meetingId) {
-        console.error('[CHIME] Invalid meeting response structure:', meeting);
+        console.error('[CHIME] Invalid meeting response: missing meetingId');
         throw new ChimeServiceError(
-          `Invalid meeting response: missing meetingId. Response: ${JSON.stringify(meeting)}`,
+          'Invalid meeting response: missing meetingId',
           'INVALID_RESPONSE'
         );
       }
@@ -425,11 +425,8 @@ export async function createMeetingSessionWithAmplify(
       userId: user.userId || user.username,
     };
     
-    console.log('[CHIME] Calling create-attendee function with payload:', {
-      meetingId: attendeePayload.meetingId,
-      userId: attendeePayload.userId,
-      payloadString: JSON.stringify(attendeePayload),
-    });
+    console.log('[CHIME] Calling create-attendee function');
+    console.log('[CHIME] Meeting ID:', attendeePayload.meetingId);
     
     const createAttendeeFunctionUrl =
       process.env.EXPO_PUBLIC_CHIME_CREATE_ATTENDEE_URL ||

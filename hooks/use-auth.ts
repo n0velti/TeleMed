@@ -51,8 +51,12 @@ export function useAuth() {
     fetchCurrentUser();
   }, [fetchCurrentUser]);
 
+  // Extract userId from user object
+  const userId = user?.userId || user?.username || null;
+
   return {
     user,
+    userId,
     userEmail,
     isAuthenticated,
     isLoading,
