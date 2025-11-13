@@ -3,6 +3,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAppointments } from '@/hooks/use-appointments';
 import { useAuth } from '@/hooks/use-auth';
+import { Ionicons } from '@expo/vector-icons';
 import { generateClient } from 'aws-amplify/data';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -88,7 +89,7 @@ const allSpecialists: Record<string, Specialist> = {
 export default function SpecialistDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { user, userEmail } = useAuth();
-  const { createAppointment, isLoading: isCreating } = useAppointments();
+  const { createAppointment, fetchAppointments, isLoading: isCreating } = useAppointments();
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [startTime, setStartTime] = useState<string>('');
@@ -97,6 +98,18 @@ export default function SpecialistDetailScreen() {
   const [specialist, setSpecialist] = useState<Specialist | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'images' | 'pricing' | 'info' | 'rating'>('images');
+  const [appointmentType, setAppointmentType] = useState<'in-person' | 'virtual'>('virtual');
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showDurationPicker, setShowDurationPicker] = useState(false);
+  const [showAppointmentTypePicker, setShowAppointmentTypePicker] = useState(false);
+  const defaultDaysUntilAvailable = 3;
+  const defaultDate = new Date();
+  defaultDate.setDate(defaultDate.getDate() + defaultDaysUntilAvailable);
+  const [checkoutDate, setCheckoutDate] = useState<Date>(defaultDate);
+  const [checkoutTime, setCheckoutTime] = useState<string>('10:00 AM');
+  const [checkoutDuration, setCheckoutDuration] = useState<string>('30 min');
+  const [showBookingConfirmation, setShowBookingConfirmation] = useState(false);
 
   // Fetch specialist from database
   useEffect(() => {
@@ -209,11 +222,99 @@ export default function SpecialistDetailScreen() {
   };
 
   const handleBookAppointment = () => {
-    setShowBookingModal(true);
-    // Set default date to tomorrow
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    setSelectedDate(tomorrow.toISOString().split('T')[0]);
+    setShowBookingConfirmation(true);
+  };
+
+  const calculateEndTime = (startTime: string, duration: string): string => {
+    // Parse start time (e.g., "10:00 AM")
+    const [timePart, period] = startTime.split(' ');
+    const [hours, minutes] = timePart.split(':').map(Number);
+    let hour24 = hours;
+    if (period === 'PM' && hours !== 12) hour24 += 12;
+    if (period === 'AM' && hours === 12) hour24 = 0;
+
+    // Parse duration (e.g., "30 min")
+    const durationMatch = duration.match(/(\d+)/);
+    const durationMinutes = durationMatch ? parseInt(durationMatch[1]) : 30;
+
+    // Calculate end time
+    const startMinutes = hour24 * 60 + minutes;
+    const endMinutes = startMinutes + durationMinutes;
+    const endHour24 = Math.floor(endMinutes / 60);
+    const endMin = endMinutes % 60;
+
+    // Convert to 12-hour format
+    let endHour12 = endHour24 % 12;
+    if (endHour12 === 0) endHour12 = 12;
+    const endPeriod = endHour24 >= 12 ? 'PM' : 'AM';
+
+    return `${endHour12}:${endMin.toString().padStart(2, '0')} ${endPeriod}`;
+  };
+
+  const handleConfirmBookingFromCheckout = async () => {
+    if (!user || !userEmail) {
+      Alert.alert('Error', 'You must be logged in to book an appointment.');
+      return;
+    }
+
+    if (!specialist) {
+      Alert.alert('Error', 'Specialist information not available.');
+      return;
+    }
+
+    const endTime = calculateEndTime(checkoutTime, checkoutDuration);
+    
+    // Convert checkout time to 24-hour format for database
+    const [timePart, period] = checkoutTime.split(' ');
+    const [hours, minutes] = timePart.split(':').map(Number);
+    let hour24 = hours;
+    if (period === 'PM' && hours !== 12) hour24 += 12;
+    if (period === 'AM' && hours === 12) hour24 = 0;
+    const startTime24 = `${hour24.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+
+    // Calculate end time in 24-hour format
+    const [endTimePart, endPeriod] = endTime.split(' ');
+    const [endHours, endMins] = endTimePart.split(':').map(Number);
+    let endHour24 = endHours;
+    if (endPeriod === 'PM' && endHours !== 12) endHour24 += 12;
+    if (endPeriod === 'AM' && endHours === 12) endHour24 = 0;
+    const endTime24 = `${endHour24.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
+
+    // Format date as YYYY-MM-DD
+    const appointmentDate = checkoutDate.toISOString().split('T')[0];
+
+    // Use the hook to create appointment
+    const result = await createAppointment({
+      specialistId: specialist.id,
+      specialistName: specialist.name,
+      specialistSpecialty: specialist.specialty,
+      specialistPrice: specialist.price,
+      appointmentDate: appointmentDate,
+      startTime: startTime24,
+      endTime: endTime24,
+      duration: checkoutDuration,
+      purpose: `${appointmentType === 'virtual' ? 'Virtual' : 'In-Person'} consultation`,
+    });
+
+    if (!result.success) {
+      Alert.alert('Error', result.error || 'Failed to book appointment. Please try again.');
+      return;
+    }
+
+    // Refresh appointments
+    await fetchAppointments();
+
+    setShowBookingConfirmation(false);
+
+    Alert.alert(
+      'Success', 
+      `Your appointment with ${specialist.name} has been booked for ${checkoutDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${checkoutTime}!`,
+      [{ text: 'OK', onPress: () => router.push('/(tabs)/schedule') }]
+    );
+  };
+
+  const handleCancelBooking = () => {
+    setShowBookingConfirmation(false);
   };
 
   const calculateDuration = () => {
@@ -328,81 +429,62 @@ export default function SpecialistDetailScreen() {
 
   return (
     <ThemedView style={styles.container}>
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-          <View style={styles.profileContainer}>
-            {/* Profile Header */}
-            <View style={styles.profileHeader}>
-              {/* Profile Picture with Gradient Border */}
-              <View style={styles.profilePictureContainer}>
-                <LinearGradient
-                  colors={gradientColors}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.profilePictureBorder}
-                >
+        <View style={styles.layoutWrapper}>
+          <View style={styles.mainLayout}>
+          {/* Left Column - Profile, Bio, Tabs */}
+          <View style={styles.leftColumn}>
+            <ScrollView 
+              style={styles.scrollView} 
+              showsVerticalScrollIndicator={false} 
+              contentContainerStyle={styles.scrollContent}
+              nestedScrollEnabled={true}
+            >
+              {/* Profile Header */}
+              <View style={styles.profileHeader}>
+                {/* Profile Picture with Gradient Border */}
+                <View style={styles.profilePictureContainer}>
                   <LinearGradient
                     colors={gradientColors}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
-                    style={styles.profilePictureInner}
+                    style={styles.profilePictureBorder}
                   >
-                    <ThemedText style={styles.initialsText}>
-                      {specialist.name.split(' ').map(n => n[0]).join('')}
-                    </ThemedText>
+                    <LinearGradient
+                      colors={gradientColors}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.profilePictureInner}
+                    >
+                      <ThemedText style={styles.initialsText}>
+                        {specialist.name.split(' ').map(n => n[0]).join('')}
+                      </ThemedText>
+                    </LinearGradient>
                   </LinearGradient>
-                </LinearGradient>
-              </View>
-
-              {/* Name and Info Row */}
-              <View style={styles.nameInfoContainer}>
-                <View style={styles.nameRow}>
-                  <ThemedText style={styles.profileName}>{specialist.name}</ThemedText>
-                  <View style={styles.verifiedBadge}>
-                    <ThemedText style={styles.verifiedText}>✓</ThemedText>
-                  </View>
-                </View>
-                <ThemedText style={styles.profileSpecialty}>{specialist.specialty}</ThemedText>
-
-                {/* Stats Row */}
-                <View style={styles.statsRow}>
-                  <View style={styles.statItem}>
-                    <ThemedText style={styles.statNumber}>127</ThemedText>
-                    <ThemedText style={styles.statLabel}>Reviews</ThemedText>
-                  </View>
-                  <View style={styles.statItem}>
-                    <ThemedText style={styles.statNumber}>4.8</ThemedText>
-                    <ThemedText style={styles.statLabel}>Rating</ThemedText>
-                  </View>
-                  <View style={styles.statItem}>
-                    <ThemedText style={styles.statNumber}>12</ThemedText>
-                    <ThemedText style={styles.statLabel}>Experience</ThemedText>
-                  </View>
                 </View>
 
-                {/* Bio */}
-                <ThemedText style={styles.profileBio}>{specialist.bio}</ThemedText>
-                
-                {/* Action Buttons */}
-                <View style={styles.actionButtonsRow}>
-                  <TouchableOpacity 
-                    style={styles.followButton}
-                    onPress={handleBookAppointment}
-                    activeOpacity={0.8}
-                  >
-                    <ThemedText style={styles.followButtonText}>Book Appointment</ThemedText>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.messageButton} activeOpacity={0.8}>
-                    <ThemedText style={styles.messageButtonText}>Message</ThemedText>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.addButton} activeOpacity={0.8}>
-                    <ThemedText style={styles.addButtonText}>+</ThemedText>
-                  </TouchableOpacity>
+                {/* Name and Info Row */}
+                <View style={styles.nameInfoContainer}>
+                  <View style={styles.nameSpecialtyContainer}>
+                    <View style={styles.nameRow}>
+                      <ThemedText style={styles.profileName}>{specialist.name}</ThemedText>
+                      <View style={styles.verifiedBadge}>
+                        <ThemedText style={styles.verifiedText}>✓</ThemedText>
+                      </View>
+                    </View>
+                    <ThemedText style={styles.profileSpecialty}>{specialist.specialty}</ThemedText>
+                  </View>
                 </View>
               </View>
-            </View>
 
-          {/* Tabs */}
-          <View style={styles.tabsContainer}>
+              {/* Bio */}
+              {specialist.bio && (
+                <View style={styles.bioContainer}>
+                  <ThemedText style={styles.profileBio}>{specialist.bio}</ThemedText>
+                </View>
+              )}
+
+              {/* Tabs */}
+              <View style={styles.tabsContainer}>
             <TouchableOpacity 
               style={[styles.tab, activeTab === 'images' && styles.activeTab]}
               onPress={() => setActiveTab('images')}
@@ -470,25 +552,45 @@ export default function SpecialistDetailScreen() {
           {activeTab === 'pricing' && (
             <View style={styles.tabContent}>
               <View style={styles.pricingContent}>
-                <View style={styles.pricingHeader}>
-                  <ThemedText style={styles.pricingAmount}>${specialist.price}</ThemedText>
-                  <ThemedText style={styles.pricingUnit}>per session</ThemedText>
+                {/* Price Row */}
+                <View style={styles.sidebarRow}>
+                  <View style={styles.sidebarRowLabelContainer}>
+                    <ThemedText style={styles.sidebarRowLabel}>Price</ThemedText>
+                    <ThemedText style={styles.dateSublabel}>Starting at</ThemedText>
+                  </View>
+                  <View style={styles.amazonPriceContainer}>
+                    <ThemedText style={styles.amazonDollarSign}>$</ThemedText>
+                    <View style={styles.amazonPriceMainContainer}>
+                      <ThemedText style={styles.amazonPriceMain}>
+                        {Math.floor(specialist.price).toLocaleString()}
+                      </ThemedText>
+                      <ThemedText style={styles.amazonPriceCents}>
+                        {Math.round((specialist.price % 1) * 100).toString().padStart(2, '0')}
+                      </ThemedText>
+                    </View>
+                  </View>
                 </View>
-                <ThemedText style={styles.pricingDescription}>
-                  Standard consultation includes full examination, diagnosis, and treatment plan.
-                </ThemedText>
-                <View style={styles.pricingFeatures}>
-                  <View style={styles.pricingFeature}>
-                    <ThemedText style={styles.pricingFeatureText}>✓ 45-minute consultation</ThemedText>
-                  </View>
-                  <View style={styles.pricingFeature}>
-                    <ThemedText style={styles.pricingFeatureText}>✓ Follow-up support via message</ThemedText>
-                  </View>
-                  <View style={styles.pricingFeature}>
-                    <ThemedText style={styles.pricingFeatureText}>✓ Prescription management</ThemedText>
-                  </View>
-                  <View style={styles.pricingFeature}>
-                    <ThemedText style={styles.pricingFeatureText}>✓ Medical records access</ThemedText>
+
+                {/* Duration Row */}
+                <View style={styles.sidebarRow}>
+                  <ThemedText style={styles.sidebarRowLabel}>Duration</ThemedText>
+                  <ThemedText style={styles.sidebarRowValue}>45 minutes</ThemedText>
+                </View>
+
+                {/* Consultation Type Row */}
+                <View style={styles.sidebarRow}>
+                  <ThemedText style={styles.sidebarRowLabel}>Consultation Type</ThemedText>
+                  <ThemedText style={styles.sidebarRowValue}>Standard</ThemedText>
+                </View>
+
+                {/* Features Section */}
+                <View style={styles.sidebarRowVertical}>
+                  <ThemedText style={styles.sidebarRowLabel}>Includes</ThemedText>
+                  <View style={styles.featuresList}>
+                    <ThemedText style={styles.featureItem}>✓ 45-minute consultation</ThemedText>
+                    <ThemedText style={styles.featureItem}>✓ Follow-up support via message</ThemedText>
+                    <ThemedText style={styles.featureItem}>✓ Prescription management</ThemedText>
+                    <ThemedText style={styles.featureItem}>✓ Medical records access</ThemedText>
                   </View>
                 </View>
               </View>
@@ -498,23 +600,37 @@ export default function SpecialistDetailScreen() {
           {activeTab === 'info' && (
             <View style={styles.tabContent}>
               <View style={styles.infoContent}>
-                <ThemedText style={styles.infoSectionTitle}>Languages</ThemedText>
-                <View style={styles.languagesRow}>
-                  {specialist.languages && specialist.languages.map((language, index) => (
-                    <View key={index} style={styles.languageTag}>
-                      <ThemedText style={styles.languageText}>{language}</ThemedText>
-                    </View>
-                  ))}
+                {/* Languages Row */}
+                <View style={styles.sidebarRowVertical}>
+                  <ThemedText style={styles.sidebarRowLabel}>Languages</ThemedText>
+                  <View style={styles.languagesRow}>
+                    {specialist.languages && specialist.languages.map((language, index) => (
+                      <View key={index} style={styles.languageTag}>
+                        <ThemedText style={styles.languageText}>{language}</ThemedText>
+                      </View>
+                    ))}
+                  </View>
                 </View>
-                <ThemedText style={styles.infoSectionTitle}>Availability</ThemedText>
+
+                {/* Availability Rows */}
                 {specialist.availability && specialist.availability.map((slot, index) => (
-                  <ThemedText key={index} style={styles.availabilityText}>• {slot}</ThemedText>
+                  <View key={index} style={styles.sidebarRow}>
+                    <ThemedText style={styles.sidebarRowLabel}>Availability</ThemedText>
+                    <ThemedText style={styles.sidebarRowValue}>{slot}</ThemedText>
+                  </View>
                 ))}
-                <ThemedText style={styles.infoSectionTitle}>Office Location</ThemedText>
-                <ThemedText style={styles.locationText}>123 Medical Plaza</ThemedText>
-                <ThemedText style={styles.locationText}>Suite 456</ThemedText>
-                <ThemedText style={styles.locationText}>New York, NY 10001</ThemedText>
-                <ThemedText style={styles.locationHours}>Office Hours: Mon-Fri, 9AM-5PM</ThemedText>
+
+                {/* Office Location Row */}
+                <View style={styles.sidebarRowVertical}>
+                  <ThemedText style={styles.sidebarRowLabel}>Office Location</ThemedText>
+                  <ThemedText style={styles.sidebarRowValueVertical}>123 Medical Plaza, Suite 456, New York, NY 10001</ThemedText>
+                </View>
+
+                {/* Office Hours Row */}
+                <View style={styles.sidebarRow}>
+                  <ThemedText style={styles.sidebarRowLabel}>Office Hours</ThemedText>
+                  <ThemedText style={styles.sidebarRowValue}>Mon-Fri, 9AM-5PM</ThemedText>
+                </View>
               </View>
             </View>
           )}
@@ -548,9 +664,221 @@ export default function SpecialistDetailScreen() {
             </View>
           )}
 
-            <View style={styles.spacer} />
+              <View style={styles.spacer} />
+            </ScrollView>
           </View>
-        </ScrollView>
+
+          {/* Right Column - Booking Sidebar (Fixed) */}
+          <View style={styles.rightSidebar}>
+            {!showBookingConfirmation ? (
+              <>
+                <ScrollView 
+                  style={styles.sidebarScrollView} 
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.sidebarScrollContent}
+                >
+                  <View style={styles.sidebarContent}>
+                    {/* Pricing */}
+                    <View style={styles.sidebarRow}>
+                      <View>
+                        <ThemedText style={styles.sidebarRowLabel}>Price</ThemedText>
+                        <ThemedText style={styles.sidebarPriceSublabel}>Starting at</ThemedText>
+                      </View>
+                      <View style={styles.amazonPriceContainer}>
+                        <ThemedText style={styles.amazonDollarSign}>$</ThemedText>
+                        <View style={styles.amazonPriceMainContainer}>
+                          <ThemedText style={styles.amazonPriceMain}>
+                            {Math.floor(specialist.price).toLocaleString()}
+                          </ThemedText>
+                          <ThemedText style={styles.amazonPriceCents}>
+                            {Math.round((specialist.price % 1) * 100).toString().padStart(2, '0')}
+                          </ThemedText>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Insurance Coverage */}
+                    <View style={styles.sidebarRow}>
+                      <ThemedText style={styles.sidebarRowLabel} numberOfLines={1}>Covered by Insurance</ThemedText>
+                      <ThemedText style={[styles.sidebarRowValue, styles.insuranceCovered]}>✓</ThemedText>
+                    </View>
+
+                    {/* Location */}
+                    <View style={styles.sidebarRowVertical}>
+                      <ThemedText style={styles.sidebarRowLabel}>Location</ThemedText>
+                      <ThemedText style={styles.sidebarRowValueVertical}>123 Medical Plaza, Suite 456, New York, NY 10001</ThemedText>
+                    </View>
+                  </View>
+                </ScrollView>
+                
+                {/* User Modifiable Variables - Fixed Above Buttons */}
+                <View style={styles.sidebarBookingOptions}>
+                  {/* Appointment Type Selection */}
+                  <TouchableOpacity 
+                    style={styles.sidebarRow}
+                    onPress={() => setShowAppointmentTypePicker(true)}
+                    activeOpacity={0.7}
+                  >
+                    <ThemedText style={styles.sidebarRowLabel}>Appointment Type</ThemedText>
+                    <View style={styles.sidebarRowValueWithIcon}>
+                      <ThemedText style={styles.sidebarRowValueText}>
+                        {appointmentType === 'virtual' ? 'Virtual' : 'In-Person'}
+                      </ThemedText>
+                      <Ionicons name="chevron-forward" size={16} color="#999" style={styles.editIcon} />
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Date Selection */}
+                  <TouchableOpacity 
+                    style={styles.sidebarRow}
+                    onPress={() => setShowDatePicker(true)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.sidebarRowLabelContainer}>
+                      <ThemedText style={styles.sidebarRowLabel}>Date</ThemedText>
+                      <ThemedText style={styles.dateSublabel}>Next available in {defaultDaysUntilAvailable} days</ThemedText>
+                    </View>
+                    <View style={styles.sidebarRowValueWithIcon}>
+                      <ThemedText style={styles.sidebarRowValue}>
+                        {checkoutDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                      </ThemedText>
+                      <Ionicons name="chevron-forward" size={16} color="#999" style={styles.editIcon} />
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Time Selection */}
+                  <TouchableOpacity 
+                    style={styles.sidebarRow}
+                    onPress={() => setShowTimePicker(true)}
+                    activeOpacity={0.7}
+                  >
+                    <ThemedText style={styles.sidebarRowLabel}>Time</ThemedText>
+                    <View style={styles.sidebarRowValueWithIcon}>
+                      <ThemedText style={styles.sidebarRowValueText}>
+                        {checkoutTime}
+                      </ThemedText>
+                      <Ionicons name="chevron-forward" size={16} color="#999" style={styles.editIcon} />
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Duration Selection */}
+                  <TouchableOpacity 
+                    style={styles.sidebarRow}
+                    onPress={() => setShowDurationPicker(true)}
+                    activeOpacity={0.7}
+                  >
+                    <ThemedText style={styles.sidebarRowLabel}>Duration</ThemedText>
+                    <View style={styles.sidebarRowValueWithIcon}>
+                      <ThemedText style={styles.sidebarRowValueText}>
+                        {checkoutDuration}
+                      </ThemedText>
+                      <Ionicons name="chevron-forward" size={16} color="#999" style={styles.editIcon} />
+                    </View>
+                  </TouchableOpacity>
+                </View>
+                
+                {/* Action Buttons - Fixed at Bottom */}
+                <View style={styles.sidebarButtonsContainer}>
+                  <TouchableOpacity 
+                    style={styles.sidebarBookButton}
+                    onPress={handleBookAppointment}
+                    activeOpacity={0.8}
+                  >
+                    <ThemedText style={styles.sidebarBookButtonText}>Book Appointment</ThemedText>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.sidebarMessageButton} activeOpacity={0.8}>
+                    <ThemedText style={styles.sidebarMessageButtonText}>Message</ThemedText>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : (
+              /* Booking Confirmation View */
+              <ScrollView 
+                style={styles.sidebarScrollView} 
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.sidebarScrollContent}
+              >
+                <View style={styles.sidebarContent}>
+                  <ThemedText style={styles.confirmationTitle}>Confirm Booking</ThemedText>
+                  
+                  {/* Booking Details */}
+                  <View style={styles.sidebarRowVertical}>
+                    <ThemedText style={styles.sidebarRowLabel}>Specialist</ThemedText>
+                    <ThemedText style={styles.sidebarRowValueVertical}>{specialist.name}</ThemedText>
+                  </View>
+
+                  <View style={styles.sidebarRow}>
+                    <ThemedText style={styles.sidebarRowLabel}>Appointment Type</ThemedText>
+                    <ThemedText style={styles.sidebarRowValue}>{appointmentType === 'virtual' ? 'Virtual' : 'In-Person'}</ThemedText>
+                  </View>
+
+                  <View style={styles.sidebarRow}>
+                    <ThemedText style={styles.sidebarRowLabel}>Date</ThemedText>
+                    <ThemedText style={styles.sidebarRowValue}>
+                      {checkoutDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </ThemedText>
+                  </View>
+
+                  <View style={styles.sidebarRow}>
+                    <ThemedText style={styles.sidebarRowLabel}>Time</ThemedText>
+                    <ThemedText style={styles.sidebarRowValue}>
+                      {checkoutTime} - {calculateEndTime(checkoutTime, checkoutDuration)}
+                    </ThemedText>
+                  </View>
+
+                  <View style={styles.sidebarRow}>
+                    <ThemedText style={styles.sidebarRowLabel}>Duration</ThemedText>
+                    <ThemedText style={styles.sidebarRowValue}>{checkoutDuration}</ThemedText>
+                  </View>
+
+                  <View style={styles.sidebarRow}>
+                    <View>
+                      <ThemedText style={styles.sidebarRowLabel}>Price</ThemedText>
+                      <ThemedText style={styles.dateSublabel}>Starting at</ThemedText>
+                    </View>
+                    <View style={styles.amazonPriceContainer}>
+                      <ThemedText style={styles.amazonDollarSign}>$</ThemedText>
+                      <View style={styles.amazonPriceMainContainer}>
+                        <ThemedText style={styles.amazonPriceMain}>
+                          {Math.floor(specialist.price).toLocaleString()}
+                        </ThemedText>
+                        <ThemedText style={styles.amazonPriceCents}>
+                          {Math.round((specialist.price % 1) * 100).toString().padStart(2, '0')}
+                        </ThemedText>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              </ScrollView>
+            )}
+            
+            {/* Confirmation Buttons - Fixed at Bottom */}
+            {showBookingConfirmation && (
+              <View style={styles.sidebarButtonsContainer}>
+                <TouchableOpacity 
+                  style={styles.sidebarCancelButton}
+                  onPress={handleCancelBooking}
+                  activeOpacity={0.8}
+                >
+                  <ThemedText style={styles.sidebarCancelButtonText}>Cancel</ThemedText>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={styles.sidebarBookButton}
+                  onPress={handleConfirmBookingFromCheckout}
+                  activeOpacity={0.8}
+                  disabled={isCreating}
+                >
+                  {isCreating ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <ThemedText style={styles.sidebarBookButtonText}>Confirm Booking</ThemedText>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+          </View>
+        </View>
 
       {/* Booking Modal */}
       <Modal
@@ -687,6 +1015,192 @@ export default function SpecialistDetailScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Date Picker Modal */}
+      <Modal
+        visible={showDatePicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowDatePicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.datePickerModal}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Select Date</ThemedText>
+              <TouchableOpacity 
+                onPress={() => setShowDatePicker(false)}
+                style={styles.closeModalButton}
+              >
+                <ThemedText style={styles.closeModalText}>✕</ThemedText>
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.datePickerContent}>
+              {/* Simple date selection - generate next 30 days */}
+              {Array.from({ length: 30 }, (_, i) => {
+                const date = new Date();
+                date.setDate(date.getDate() + i);
+                const isSelected = checkoutDate.toDateString() === date.toDateString();
+                
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.dateOption, isSelected && styles.dateOptionSelected]}
+                    onPress={() => {
+                      setCheckoutDate(date);
+                      setShowDatePicker(false);
+                    }}
+                  >
+                    <ThemedText style={[styles.dateOptionText, isSelected && styles.dateOptionTextSelected]}>
+                      {date.toLocaleDateString('en-US', { 
+                        weekday: 'short', 
+                        month: 'short', 
+                        day: 'numeric',
+                        year: 'numeric'
+                      })}
+                    </ThemedText>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Time Picker Modal */}
+      <Modal
+        visible={showTimePicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowTimePicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.datePickerModal}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Select Time</ThemedText>
+              <TouchableOpacity 
+                onPress={() => setShowTimePicker(false)}
+                style={styles.closeModalButton}
+              >
+                <ThemedText style={styles.closeModalText}>✕</ThemedText>
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.datePickerContent}>
+              {/* Generate time slots */}
+              {Array.from({ length: 10 }, (_, i) => {
+                const hour = i + 8; // Start from 8 AM, end at 5 PM
+                const time12 = hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`;
+                const isSelected = checkoutTime === time12;
+                
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.dateOption, isSelected && styles.dateOptionSelected]}
+                    onPress={() => {
+                      setCheckoutTime(time12);
+                      setShowTimePicker(false);
+                    }}
+                  >
+                    <ThemedText style={[styles.dateOptionText, isSelected && styles.dateOptionTextSelected]}>
+                      {time12}
+                    </ThemedText>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Duration Picker Modal */}
+      <Modal
+        visible={showDurationPicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowDurationPicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.datePickerModal}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Select Duration</ThemedText>
+              <TouchableOpacity 
+                onPress={() => setShowDurationPicker(false)}
+                style={styles.closeModalButton}
+              >
+                <ThemedText style={styles.closeModalText}>✕</ThemedText>
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.datePickerContent}>
+              {/* Duration options */}
+              {['15 min', '30 min', '45 min', '60 min', '90 min'].map((duration, i) => {
+                const isSelected = checkoutDuration === duration;
+                
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.dateOption, isSelected && styles.dateOptionSelected]}
+                    onPress={() => {
+                      setCheckoutDuration(duration);
+                      setShowDurationPicker(false);
+                    }}
+                  >
+                    <ThemedText style={[styles.dateOptionText, isSelected && styles.dateOptionTextSelected]}>
+                      {duration}
+                    </ThemedText>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Appointment Type Picker Modal */}
+      <Modal
+        visible={showAppointmentTypePicker}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowAppointmentTypePicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.datePickerModal}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>Select Appointment Type</ThemedText>
+              <TouchableOpacity 
+                onPress={() => setShowAppointmentTypePicker(false)}
+                style={styles.closeModalButton}
+              >
+                <ThemedText style={styles.closeModalText}>✕</ThemedText>
+              </TouchableOpacity>
+            </View>
+            
+            <ScrollView style={styles.datePickerContent}>
+              {/* Appointment type options */}
+              {['Virtual', 'In-Person'].map((type, i) => {
+                const isSelected = (appointmentType === 'virtual' && type === 'Virtual') || 
+                                  (appointmentType === 'in-person' && type === 'In-Person');
+                
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.dateOption, isSelected && styles.dateOptionSelected]}
+                    onPress={() => {
+                      setAppointmentType(type === 'Virtual' ? 'virtual' : 'in-person');
+                      setShowAppointmentTypePicker(false);
+                    }}
+                  >
+                    <ThemedText style={[styles.dateOptionText, isSelected && styles.dateOptionTextSelected]}>
+                      {type}
+                    </ThemedText>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -695,16 +1209,298 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  layoutWrapper: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
+  },
+  mainLayout: {
+    flexDirection: 'row',
+    width: '100%',
+    maxWidth: 950,
+    flex: 1,
+    alignItems: 'flex-start',
+    position: 'relative',
+    minHeight: 0,
+    paddingRight: 360,
+  },
+  leftColumn: {
+    flex: 1,
+    maxWidth: 600,
+    minHeight: 0,
+  },
   scrollView: {
     flex: 1,
+    minHeight: 0,
+    flexGrow: 1,
   },
   scrollContent: {
     paddingVertical: 0,
   },
+  rightSidebar: {
+    width: 320,
+    position: 'absolute',
+    right: 20,
+    top: 20,
+    bottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(128, 128, 128, 0.2)',
+    borderRadius: 9,
+    backgroundColor: '#fff',
+  },
+  sidebarScrollView: {
+    flex: 1,
+  },
+  sidebarScrollContent: {
+    flexGrow: 1,
+  },
+  sidebarContent: {
+    paddingTop: 10,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  sidebarBookingOptions: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+  sidebarButtonsContainer: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(128, 128, 128, 0.1)',
+  },
+  sidebarSpacer: {
+    flex: 1,
+    minHeight: 20,
+  },
+  sidebarSection: {
+    marginBottom: 0,
+    marginTop: 0,
+  },
+  sidebarRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(128, 128, 128, 0.1)',
+  },
+  sidebarRowLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    opacity: 0.7,
+    flex: 1,
+    flexShrink: 1,
+  },
+  sidebarRowLabelContainer: {
+    flex: 1,
+    flexShrink: 1,
+  },
+  sidebarRowValue: {
+    fontSize: 14,
+    fontWeight: '400',
+    textAlign: 'right',
+    flexShrink: 0,
+    marginLeft: 12,
+    minWidth: 20,
+  },
+  sidebarRowValueWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexShrink: 0,
+    marginLeft: 12,
+  },
+  sidebarRowValueText: {
+    fontSize: 14,
+    fontWeight: '400',
+  },
+  editIcon: {
+    marginLeft: 4,
+  },
+  insuranceCovered: {
+    color: '#22c55e',
+    fontSize: 18,
+  },
+  insuranceNotCovered: {
+    color: '#ef4444',
+    fontSize: 18,
+  },
+  sidebarRowValueContainer: {
+    flex: 1,
+    alignItems: 'flex-end',
+    marginLeft: 12,
+  },
+  sidebarRowVertical: {
+    flexDirection: 'column',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(128, 128, 128, 0.1)',
+  },
+  sidebarRowLabelVertical: {
+    fontSize: 14,
+    fontWeight: '500',
+    opacity: 0.7,
+    marginTop: 0,
+    marginBottom: 0,
+  },
+  dateSublabel: {
+    fontSize: 11,
+    opacity: 0.5,
+    marginTop: 2,
+  },
+  appointmentTypeRow: {
+    paddingTop: 0,
+  },
+  sidebarRowValueVertical: {
+    fontSize: 14,
+    fontWeight: '400',
+    marginTop: 4,
+  },
+  segmentedControlContainerVertical: {
+    marginTop: 4,
+    alignItems: 'flex-start',
+    width: '100%',
+  },
+  pricingBox: {
+    marginBottom: 0,
+  },
+  sidebarPrice: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 2,
+    textAlign: 'right',
+  },
+  amazonPriceContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
+  },
+  amazonDollarSign: {
+    fontSize: 14,
+    fontWeight: '400',
+    lineHeight: 14,
+    marginRight: 2,
+    marginTop: 2,
+  },
+  amazonPriceMainContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  amazonPriceMain: {
+    fontSize: 28,
+    fontWeight: '400',
+    lineHeight: 28,
+  },
+  amazonPriceCents: {
+    fontSize: 14,
+    fontWeight: '400',
+    lineHeight: 14,
+    marginLeft: 2,
+    marginTop: 2,
+  },
+  sidebarPriceSublabel: {
+    fontSize: 11,
+    opacity: 0.5,
+    marginTop: -4,
+  },
+  sidebarPriceUnit: {
+    fontSize: 12,
+    opacity: 0.6,
+    textAlign: 'right',
+  },
+  insuranceBadge: {
+    backgroundColor: '#E8F5E9',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#C8E6C9',
+  },
+  insuranceText: {
+    fontSize: 13,
+    color: '#2E7D32',
+    fontWeight: '500',
+  },
+  sidebarBookButton: {
+    backgroundColor: '#E50914',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    height: 36,
+  },
+  sidebarBookButtonText: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: '#fff',
+  },
+  sidebarMessageButton: {
+    backgroundColor: '#F2F2F7',
+    borderWidth: 0,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 36,
+  },
+  sidebarMessageButtonText: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: '#E50914',
+  },
+  confirmationTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  sidebarCancelButton: {
+    backgroundColor: '#F2F2F7',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    height: 36,
+  },
+  sidebarCancelButtonText: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: '#000',
+  },
+  sidebarSectionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 12,
+    opacity: 0.8,
+  },
+  segmentedControl: {
+    height: 36,
+  },
+  segmentedControlContainer: {
+    flex: 1,
+    marginLeft: 12,
+    alignItems: 'flex-end',
+  },
+  segmentedControlInline: {
+    height: 36,
+    width: '100%',
+  },
+  sidebarLocationText: {
+    fontSize: 14,
+    marginBottom: 4,
+    opacity: 0.8,
+  },
+  nextAvailableText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0095f6',
+  },
   profileContainer: {
     width: '100%',
-    maxWidth: 600,
-    alignSelf: 'center',
   },
   profileHeader: {
     flexDirection: 'row',
@@ -738,6 +1534,10 @@ const styles = StyleSheet.create({
   nameInfoContainer: {
     flex: 1,
   },
+  nameSpecialtyContainer: {
+    height: 86,
+    justifyContent: 'center',
+  },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -764,29 +1564,21 @@ const styles = StyleSheet.create({
   profileSpecialty: {
     fontSize: 13,
     opacity: 0.6,
-    marginBottom: 12,
   },
-  statsRow: {
+  bioContainer: {
+    width: '100%',
+    maxWidth: 950,
+    paddingHorizontal: 16,
+    paddingVertical: 0,
+    marginBottom: 24,
     flexDirection: 'row',
-    gap: 24,
-    marginBottom: 12,
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statNumber: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 0,
-  },
-  statLabel: {
-    fontSize: 13,
-    opacity: 0.6,
   },
   profileBio: {
     fontSize: 13,
     lineHeight: 18,
-    marginBottom: 12,
+    textAlign: 'center',
+    maxWidth: 600,
+    flex: 1,
   },
   actionButtonsRow: {
     flexDirection: 'row',
@@ -888,7 +1680,18 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   pricingContent: {
-    padding: 16,
+    paddingTop: 10,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+  },
+  featuresList: {
+    marginTop: 8,
+  },
+  featureItem: {
+    fontSize: 14,
+    fontWeight: '400',
+    marginTop: 6,
+    opacity: 0.8,
   },
   pricingHeader: {
     flexDirection: 'row',
@@ -922,7 +1725,9 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   infoContent: {
-    padding: 16,
+    paddingTop: 10,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
   },
   infoSectionTitle: {
     fontSize: 13,
@@ -1030,6 +1835,34 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
+  },
+  datePickerModal: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    width: '90%',
+    maxHeight: '70%',
+    overflow: 'hidden',
+  },
+  datePickerContent: {
+    padding: 20,
+    maxHeight: 400,
+  },
+  dateOption: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  dateOptionSelected: {
+    backgroundColor: '#E50914',
+  },
+  dateOptionText: {
+    fontSize: 16,
+    color: '#000',
+  },
+  dateOptionTextSelected: {
+    color: '#fff',
+    fontWeight: '600',
   },
   modalHeader: {
     flexDirection: 'row',
