@@ -156,6 +156,20 @@
               "type": "String",
               "isRequired": false,
               "attributes": []
+            },
+            "meetingId": {
+              "name": "meetingId",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "meetingConfig": {
+              "name": "meetingConfig",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
             }
           },
           "syncable": true,

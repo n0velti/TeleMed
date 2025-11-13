@@ -295,74 +295,129 @@ export async function createMeetingSessionWithAmplify(
       'Authorization': `Bearer ${session.tokens.idToken}`,
     };
     
-    // Call create-meeting function
-    // In Amplify Gen 2, functions are exposed as Lambda Function URLs
-    // After deployment, function URLs should be in amplify_outputs.json under custom.functions
-    const meetingPayload = {
-      appointmentId,
-      externalMeetingId: appointmentId ? `appointment-${appointmentId}` : undefined,
-      region: region || 'us-east-1',
-    };
-    
-    console.log('[CHIME] Calling create-meeting function');
-    
-    // Try multiple sources for function URL
-    // 1. Environment variables (for manual configuration)
-    // 2. amplify_outputs.json custom.functions
-    // 3. Fallback to AWS region-based construction (if we know the function name)
-    const createMeetingFunctionUrl = 
-      process.env.EXPO_PUBLIC_CHIME_CREATE_MEETING_URL ||
-      amplifyOutputs?.custom?.functions?.createMeeting?.url ||
-      amplifyOutputs?.custom?.functions?.['create-meeting']?.url ||
-      null;
-    
-    if (!createMeetingFunctionUrl) {
-      // Provide helpful error with instructions to get function URL from AWS Console
-      console.error('[CHIME] Function URL not found in configuration');
-      console.error('[CHIME] To fix this:');
-      console.error('[CHIME] 1. Go to AWS Console → Lambda → Functions');
-      console.error('[CHIME] 2. Find the function: create-meeting');
-      console.error('[CHIME] 3. Go to Configuration → Function URL');
-      console.error('[CHIME] 4. Copy the Function URL');
-      console.error('[CHIME] 5. Add it to .env as EXPO_PUBLIC_CHIME_CREATE_MEETING_URL=<url>');
-      throw new ChimeServiceError(
-        'Function endpoint not configured. Please add EXPO_PUBLIC_CHIME_CREATE_MEETING_URL to your environment variables with the Lambda Function URL from AWS Console.',
-        'ENDPOINT_ERROR'
-      );
+    // Check if appointment already has a meeting configured
+    let meeting: MeetingConfig | null = null;
+    if (appointmentId) {
+      try {
+        const { generateClient } = await import('aws-amplify/data');
+        const { Schema } = await import('@/amplify/data/resource');
+        const client = generateClient<Schema>({ authMode: 'userPool' });
+        
+        const appointmentResponse = await client.models.Appointment.get({ id: appointmentId });
+        const appointment = appointmentResponse.data;
+        
+        if (appointment?.meetingId && appointment?.meetingConfig) {
+          console.log('[CHIME] Found existing meeting for appointment:', appointment.meetingId);
+          try {
+            // Parse stored meeting configuration
+            meeting = JSON.parse(appointment.meetingConfig) as MeetingConfig;
+            console.log('[CHIME] Using existing meeting configuration');
+          } catch (parseError) {
+            console.warn('[CHIME] Failed to parse stored meeting config, will create new meeting:', parseError);
+            meeting = null;
+          }
+        }
+      } catch (appointmentError) {
+        console.warn('[CHIME] Could not fetch appointment, will create new meeting:', appointmentError);
+        // Continue to create new meeting
+      }
     }
     
-    const meetingResponse = await fetch(createMeetingFunctionUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(meetingPayload),
-    });
-    
-    if (!meetingResponse.ok) {
-      const errorText = await meetingResponse.text();
-      console.error('[CHIME] Create meeting error:', errorText);
-      throw new ChimeServiceError(
-        `Failed to create meeting: ${meetingResponse.statusText}`,
-        `HTTP_${meetingResponse.status}`
-      );
+    // If no existing meeting found, create a new one
+    if (!meeting) {
+      // Call create-meeting function
+      // In Amplify Gen 2, functions are exposed as Lambda Function URLs
+      // After deployment, function URLs should be in amplify_outputs.json under custom.functions
+      const meetingPayload = {
+        appointmentId,
+        externalMeetingId: appointmentId ? `appointment-${appointmentId}` : undefined,
+        region: region || 'us-east-1',
+      };
+      
+      console.log('[CHIME] Calling create-meeting function');
+      
+      // Try multiple sources for function URL
+      // 1. Environment variables (for manual configuration)
+      // 2. amplify_outputs.json custom.functions
+      // 3. Fallback to AWS region-based construction (if we know the function name)
+      const createMeetingFunctionUrl = 
+        process.env.EXPO_PUBLIC_CHIME_CREATE_MEETING_URL ||
+        amplifyOutputs?.custom?.functions?.createMeeting?.url ||
+        amplifyOutputs?.custom?.functions?.['create-meeting']?.url ||
+        null;
+      
+      if (!createMeetingFunctionUrl) {
+        // Provide helpful error with instructions to get function URL from AWS Console
+        console.error('[CHIME] Function URL not found in configuration');
+        console.error('[CHIME] To fix this:');
+        console.error('[CHIME] 1. Go to AWS Console → Lambda → Functions');
+        console.error('[CHIME] 2. Find the function: create-meeting');
+        console.error('[CHIME] 3. Go to Configuration → Function URL');
+        console.error('[CHIME] 4. Copy the Function URL');
+        console.error('[CHIME] 5. Add it to .env as EXPO_PUBLIC_CHIME_CREATE_MEETING_URL=<url>');
+        throw new ChimeServiceError(
+          'Function endpoint not configured. Please add EXPO_PUBLIC_CHIME_CREATE_MEETING_URL to your environment variables with the Lambda Function URL from AWS Console.',
+          'ENDPOINT_ERROR'
+        );
+      }
+      
+      const meetingResponse = await fetch(createMeetingFunctionUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(meetingPayload),
+      });
+      
+      if (!meetingResponse.ok) {
+        const errorText = await meetingResponse.text();
+        console.error('[CHIME] Create meeting error:', errorText);
+        throw new ChimeServiceError(
+          `Failed to create meeting: ${meetingResponse.statusText}`,
+          `HTTP_${meetingResponse.status}`
+        );
+      }
+      
+      // Parse the response body (Lambda Function URLs return JSON in the body field)
+      const meetingResponseData = await meetingResponse.json() as MeetingConfig;
+      meeting = meetingResponseData;
+      
+      // Debug: Log the full response to understand structure
+      console.log('[CHIME] Meeting response data:', JSON.stringify(meeting, null, 2));
+      console.log('[CHIME] Meeting ID from response:', meeting.meetingId);
+      
+      if (!meeting || !meeting.meetingId) {
+        console.error('[CHIME] Invalid meeting response structure:', meeting);
+        throw new ChimeServiceError(
+          `Invalid meeting response: missing meetingId. Response: ${JSON.stringify(meeting)}`,
+          'INVALID_RESPONSE'
+        );
+      }
+      
+      console.log('[CHIME] Meeting created successfully:', meeting.meetingId);
+      
+      // Store meeting configuration in appointment if appointmentId is provided
+      if (appointmentId && meeting.meetingId) {
+        try {
+          const { generateClient } = await import('aws-amplify/data');
+          const { Schema } = await import('@/amplify/data/resource');
+          const client = generateClient<Schema>({ authMode: 'userPool' });
+          
+          await client.models.Appointment.update({
+            id: appointmentId,
+            meetingId: meeting.meetingId,
+            meetingConfig: JSON.stringify(meeting),
+          });
+          console.log('[CHIME] Stored meeting configuration in appointment');
+        } catch (updateError) {
+          console.warn('[CHIME] Failed to store meeting config in appointment (non-fatal):', updateError);
+          // Non-fatal error - meeting was created successfully
+        }
+      }
     }
     
-    // Parse the response body (Lambda Function URLs return JSON in the body field)
-    const meetingResponseData = await meetingResponse.json() as MeetingConfig;
-    const meeting = meetingResponseData;
-    
-    // Debug: Log the full response to understand structure
-    console.log('[CHIME] Meeting response data:', JSON.stringify(meeting, null, 2));
-    console.log('[CHIME] Meeting ID from response:', meeting.meetingId);
-    
+    // Ensure meeting is defined (should never be null at this point, but TypeScript needs this)
     if (!meeting || !meeting.meetingId) {
-      console.error('[CHIME] Invalid meeting response structure:', meeting);
-      throw new ChimeServiceError(
-        `Invalid meeting response: missing meetingId. Response: ${JSON.stringify(meeting)}`,
-        'INVALID_RESPONSE'
-      );
+      throw new ChimeServiceError('Failed to get or create meeting', 'MEETING_ERROR');
     }
-    
-    console.log('[CHIME] Meeting created successfully:', meeting.meetingId);
     
     // Call create-attendee function
     const attendeePayload = {

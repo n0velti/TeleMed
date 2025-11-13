@@ -33,6 +33,16 @@ const schema = a.schema({
       
       // Optional fields for future enhancements
       notes: a.string(),
+      
+      // Video call meeting ID (Chime SDK meeting ID)
+      // When first user joins, a meeting is created and meetingId is stored here
+      // Subsequent users joining the same appointment will use this meetingId
+      meetingId: a.string(),
+      
+      // Full meeting configuration (stored as JSON string)
+      // Contains meetingId, mediaRegion, and mediaPlacement details needed to join
+      // This is stored because Chime SDK doesn't allow retrieving meeting details by ID
+      meetingConfig: a.string(),
     })
     .authorization((allow) => allow.authenticated()),
 
