@@ -119,7 +119,7 @@ export default function HomeScreen() {
         
         // First, find the "Family Medicine" specialization
         const specializations = await client.models.Specialization.list();
-        console.log('[Family Medicine] All specializations:', specializations.data);
+        console.log('[Family Medicine] Specializations count:', specializations.data.length);
         
         const familyMedicineSpec = specializations.data.find(
           spec => spec.name === 'Family Medicine' || spec.name?.toLowerCase().includes('family medicine')
@@ -127,7 +127,7 @@ export default function HomeScreen() {
 
         if (!familyMedicineSpec) {
           console.log('[Family Medicine] Family Medicine specialization not found');
-          console.log('[Family Medicine] Available specializations:', specializations.data.map(s => s.name));
+          console.log('[Family Medicine] Available specializations:', specializations.data.map(s => s.name).join(', '));
           setIsLoadingFamilyMedicine(false);
           return;
         }
@@ -137,12 +137,12 @@ export default function HomeScreen() {
 
         // Find all specialist-specialization relationships for Family Medicine
         const specialistSpecializations = await client.models.SpecialistSpecialization.list();
-        console.log('[Family Medicine] All specialist-specializations:', specialistSpecializations.data);
+        console.log('[Family Medicine] Specialist-specializations count:', specialistSpecializations.data.length);
         
         const familyMedicineRelations = specialistSpecializations.data.filter(
           ss => ss.specialization_id === familyMedicineId
         );
-        console.log('[Family Medicine] Family Medicine relations:', familyMedicineRelations);
+        console.log('[Family Medicine] Family Medicine relations count:', familyMedicineRelations.length);
 
         if (familyMedicineRelations.length === 0) {
           console.log('[Family Medicine] WARNING: No SpecialistSpecialization relationships found for Family Medicine');
@@ -153,18 +153,18 @@ export default function HomeScreen() {
 
         // Fetch all specialists
         const allSpecialists = await client.models.Specialist.list();
-        console.log('[Family Medicine] All specialists:', allSpecialists.data);
+        console.log('[Family Medicine] All specialists count:', allSpecialists.data.length);
         
         // Get specialist IDs from relationships
         const specialistIds = familyMedicineRelations.map(ss => ss.specialist_id);
-        console.log('[Family Medicine] Specialist IDs:', specialistIds);
+        console.log('[Family Medicine] Specialist IDs count:', specialistIds.length);
 
         // Filter specialists that have Family Medicine specialization
         // Show all specialists with Family Medicine, regardless of status (for now)
         const familyMedicineDocs = allSpecialists.data
           .filter(specialist => {
             const hasSpecialization = specialistIds.includes(specialist.id);
-            console.log(`[Family Medicine] Specialist ${specialist.id} (${specialist.first_name} ${specialist.last_name}): hasSpecialization=${hasSpecialization}, status=${specialist.status}`);
+            // Removed per-item logging to avoid memory issues
             
             // For debugging: show all specialists with Family Medicine, even if not active
             // Later we can filter by status === 'active' if needed
@@ -183,20 +183,20 @@ export default function HomeScreen() {
             popularityBadge: 'popular' as PopularityBadgeType, // Default - can be enhanced later
           }));
         
-        // Log detailed info for debugging
+        // Log summary only (avoid logging large arrays)
         if (familyMedicineDocs.length === 0) {
-          console.log('[Family Medicine] No specialists found. Debugging info:');
+          console.log('[Family Medicine] No specialists found. Summary:');
           console.log('[Family Medicine] - Specialization ID:', familyMedicineId);
-          console.log('[Family Medicine] - Specialist IDs from relationships:', specialistIds);
-          console.log('[Family Medicine] - All specialist IDs in DB:', allSpecialists.data.map(s => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, status: s.status })));
-          console.log('[Family Medicine] - Family Medicine relations:', familyMedicineRelations);
+          console.log('[Family Medicine] - Specialist IDs from relationships count:', specialistIds.length);
+          console.log('[Family Medicine] - All specialists count:', allSpecialists.data.length);
+          console.log('[Family Medicine] - Family Medicine relations count:', familyMedicineRelations.length);
         }
 
-        console.log('[Family Medicine] Final family medicine docs:', familyMedicineDocs);
+        console.log('[Family Medicine] Final family medicine docs count:', familyMedicineDocs.length);
         setFamilyMedicineSpecialists(familyMedicineDocs);
       } catch (error) {
         console.error('[Family Medicine] Error fetching Family Medicine specialists:', error);
-        console.error('[Family Medicine] Error details:', JSON.stringify(error, null, 2));
+        console.error('[Family Medicine] Error:', error instanceof Error ? error.message : 'Unknown error');
       } finally {
         setIsLoadingFamilyMedicine(false);
       }
@@ -265,8 +265,13 @@ export default function HomeScreen() {
       }
     });
 
-    console.log('[Family Medicine] Filtered specialists:', filtered);
-    console.log('[Family Medicine] Family Medicine in filtered:', filtered['Family Medicine']);
+    // Log summary only (avoid logging large objects)
+    const summary = Object.entries(filtered).reduce((acc, [key, value]) => {
+      acc[key] = Array.isArray(value) ? value.length : 0;
+      return acc;
+    }, {} as Record<string, number>);
+    console.log('[Family Medicine] Filtered specialists count:', summary);
+    console.log('[Family Medicine] Family Medicine count:', filtered['Family Medicine']?.length || 0);
     return filtered;
   }, [priceFilter, availabilityFilter, ratingFilter, familyMedicineSpecialists]);
 
